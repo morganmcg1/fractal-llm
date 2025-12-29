@@ -32,7 +32,7 @@ image = (
         "&& pip install --index-url https://download.pytorch.org/whl/cu124 "
         "torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 "
         "&& pip install uv>=0.4.0 wandb>=0.19.0 "
-        "&& FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE uv pip install flash-attn==2.6.3 --no-build-isolation"
+        "&& FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE pip install flash-attn==2.6.3 --no-build-isolation"
     )
 )
 
