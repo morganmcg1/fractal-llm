@@ -28,11 +28,12 @@ image = (
     modal.Image.from_registry("nvidia/cuda:12.4.0-devel-ubuntu22.04", add_python="3.12")
     .apt_install("git", "curl")
     .run_commands(
+        # Install build deps, then CUDA torch, then flash-attn (builds against installed torch), then tools\n"
         "pip install packaging ninja "
         "&& pip install --index-url https://download.pytorch.org/whl/cu124 "
         "torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 "
-        "&& pip install uv>=0.4.0 wandb>=0.19.0 "
-        "&& FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE pip install flash-attn==2.6.3 --no-build-isolation"
+        "&& pip install flash-attn==2.6.3 --no-build-isolation "
+        "&& pip install uv>=0.4.0 wandb>=0.19.0"
     )
 )
 
