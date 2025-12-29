@@ -38,7 +38,7 @@ image = (
 )
 
 
-app = modal.App("nanochat-modal", default_profile="weightsandbiases")
+app = modal.App("nanochat-modal")
 
 
 @dataclass

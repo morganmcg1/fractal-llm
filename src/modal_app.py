@@ -44,7 +44,8 @@ image = (
 )
 
 # Primary model for experiments (matches research plan)
-MODEL_ID = "nanochat-students/nanochat-d20"  # 561M params
+# Pull from W&B artifact produced by nanochat_modal.py speedrun.
+MODEL_ID = "wandb:morgan/fractal-llm/nanochat-d20-speedrun:latest"
 DATASET_ID = "HuggingFaceTB/smoltalk"
 MAX_SEQ_LEN = 128
 
