@@ -60,7 +60,7 @@ def _pack_dir(src: Path, dest_tar: Path):
 
 
 @app.function(
-    gpu=modal.gpu.H100(count=8),
+    gpu="H100:8",
     image=image,
     timeout=60 * 60 * 6,  # 6 hours cap
     secrets=[modal.Secret.from_name("wandb-secret")],
