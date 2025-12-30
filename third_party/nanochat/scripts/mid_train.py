@@ -51,6 +51,12 @@ dry_run = 0 # dry_run=1 is for experiments: we will log to wandb but we won't wr
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open(os.path.join('nanochat', 'configurator.py')).read()) # overrides from command line or config file
 user_config = {k: globals()[k] for k in config_keys} # possibly useful for logging
+# If caller set WANDB_RUN, use it; otherwise keep CLI/default. Append stage suffix for clarity.
+env_run = os.environ.get("WANDB_RUN")
+if env_run:
+    run = env_run
+if run != "dummy" and not run.endswith("-mid"):
+    run = f"{run}-mid"
 # -----------------------------------------------------------------------------
 
 # Compute init

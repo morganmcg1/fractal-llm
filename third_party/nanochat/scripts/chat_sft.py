@@ -59,6 +59,12 @@ eval_metrics_max_problems = 1024
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open(os.path.join('nanochat', 'configurator.py')).read()) # overrides from command line or config file
 user_config = {k: globals()[k] for k in config_keys} # possibly useful for logging
+# If caller set WANDB_RUN, use it; otherwise keep CLI/default. Append stage suffix for clarity.
+env_run = os.environ.get("WANDB_RUN")
+if env_run:
+    run = env_run
+if run != "dummy" and not run.endswith("-sft"):
+    run = f"{run}-sft"
 # -----------------------------------------------------------------------------
 
 # Compute init

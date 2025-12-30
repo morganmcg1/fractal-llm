@@ -66,6 +66,12 @@ model_tag = "" # optionally override the model tag for the output checkpoint dir
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open(os.path.join('nanochat', 'configurator.py')).read()) # overrides from command line or config file
 user_config = {k: globals()[k] for k in config_keys} # will be useful for logging
+# If caller set WANDB_RUN, use it; otherwise keep CLI/default. Append stage suffix for clarity.
+env_run = os.environ.get("WANDB_RUN")
+if env_run:
+    run = env_run
+if run != "dummy" and not run.endswith("-base"):
+    run = f"{run}-base"
 # -----------------------------------------------------------------------------
 
 # Compute init
