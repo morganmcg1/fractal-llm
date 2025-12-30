@@ -40,8 +40,11 @@ import torch.distributed as dist
 import numpy as np
 import wandb
 from torch.utils.data import IterableDataset, DataLoader
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
+
+# nanochat imports
+from nanochat.checkpoint_manager import build_model, find_last_step
+from nanochat.tokenizer import get_tokenizer
 
 # ---------------------------------------------------------------------------
 # Wire nanochat helpers (style compatibility)
@@ -116,6 +119,7 @@ eval_every = 200
 log_every = 20
 seed = 42
 gradient_checkpointing = False
+source_stage = "sft"  # nanochat checkpoint family: base|mid|sft|rl
 
 # Grid search knobs
 grid = False
@@ -184,7 +188,7 @@ def format_docvqa(sample: dict) -> str:
 class DocVQADataset(IterableDataset):
     """Streaming iterable dataset sharded across ranks."""
 
-    def __init__(self, tokenizer: AutoTokenizer, split: str, seed: int, world_size: int, rank: int):
+    def __init__(self, tokenizer, split: str, seed: int, world_size: int, rank: int):
         self.tokenizer = tokenizer
         self.split = split
         self.seed = seed
@@ -200,18 +204,17 @@ class DocVQADataset(IterableDataset):
             text = format_docvqa(sample)
             if not text:
                 continue
-            enc = self.tokenizer(
-                text,
-                truncation=True,
-                max_length=max_seq_len,
-                padding="max_length",
-                return_attention_mask=True,
-                return_tensors="pt",
-            )
-            input_ids = enc["input_ids"][0]
-            attn = enc["attention_mask"][0]
+            # nanochat tokenizer expects conversation structure; wrap into messages
+            conversation = {"messages": [{"role": "user", "content": text}]}
+            ids, mask = self.tokenizer.render_conversation(conversation)
+            # Clamp / truncate to max_seq_len
+            ids = ids[:max_seq_len]
+            mask = mask[:max_seq_len]
+            input_ids = torch.tensor(ids, dtype=torch.long)
+            attn = torch.tensor([1 if m >= 0 else 0 for m in mask], dtype=torch.long)
             labels = input_ids.clone()
-            labels[attn == 0] = -100  # ignore padding
+            # mask==0 -> positions we don't train on
+            labels = torch.where(torch.tensor(mask) == 1, labels, torch.tensor(-100))
             yield input_ids, attn, labels
 
 
@@ -223,10 +226,10 @@ def build_dataloader(tokenizer, seed, world_size, rank) -> DataLoader:
 # ---------------------------------------------------------------------------
 # Model helpers
 
-def resolve_model_path(model_ref: str) -> str:
+def resolve_checkpoint_dir(model_ref: str) -> Path:
     """
-    Download W&B artifact if needed, otherwise pass through HF/local id.
-    Fails hard if an artifact cannot yield a config.json.
+    Download W&B artifact if needed, otherwise treat as local path.
+    Expects nanochat checkpoint layout: checkpoints/model_*.pt + meta_*.json (or those files directly in root).
     """
     if model_ref.startswith("wandb:"):
         import wandb as _wandb
@@ -238,43 +241,18 @@ def resolve_model_path(model_ref: str) -> str:
         target = cache_root / art.name.replace(":", "_")
         if not target.exists():
             art.download(root=str(target))
-
-        # Extract any tarballs to search for config.json
-        for tar_file in target.rglob("*.tar.gz"):
-            try:
-                import tarfile
-
-                extract_dir = target / "extracted"
-                extract_dir.mkdir(exist_ok=True, parents=True)
-                with tarfile.open(tar_file, "r:gz") as tar:
-                    tar.extractall(extract_dir)
-            except Exception:
-                pass
-
-        for cfg in target.rglob("config.json"):
-            return str(cfg.parent)
-
-        raise FileNotFoundError(
-            f"No config.json found in artifact {art.name}. "
-            f"Inspect {target} and ensure the artifact contains a HuggingFace-style model directory."
-        )
-
-    return model_ref
+        if (target / "checkpoints").exists():
+            return target / "checkpoints"
+        return target
+    return Path(model_ref)
 
 
 def load_model_and_tok(device_type: str):
-    model_path = resolve_model_path(model_id)
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    torch_dtype = torch.bfloat16 if dtype == "bfloat16" and device_type == "cuda" else torch.float32
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch_dtype,
-        trust_remote_code=True,
-    )
-    model.config.use_cache = False
-    if gradient_checkpointing:
+    ckpt_dir = resolve_checkpoint_dir(model_id)
+    step = find_last_step(ckpt_dir)
+    model, tokenizer, meta = build_model(ckpt_dir, step=step, device=torch.device(device_type), phase="train")
+    model.to(device_type)
+    if gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
     return model, tokenizer
 
