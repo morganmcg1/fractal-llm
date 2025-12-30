@@ -224,7 +224,10 @@ def build_dataloader(tokenizer, seed, world_size, rank) -> DataLoader:
 # Model helpers
 
 def resolve_model_path(model_ref: str) -> str:
-    """Download W&B artifact if needed, otherwise pass through HF/local id."""
+    """
+    Download W&B artifact if needed, otherwise pass through HF/local id.
+    Falls back to HF model if artifact lacks a config.json (common for nanochat tar artifacts).
+    """
     if model_ref.startswith("wandb:"):
         import wandb as _wandb
         art_path = model_ref[len("wandb:") :]
@@ -235,10 +238,27 @@ def resolve_model_path(model_ref: str) -> str:
         target = cache_root / art.name.replace(":", "_")
         if not target.exists():
             art.download(root=str(target))
-        # find config.json
+
+        # Extract any tarballs to search for config.json
+        for tar_file in target.rglob("*.tar.gz"):
+            try:
+                import tarfile
+
+                extract_dir = target / "extracted"
+                extract_dir.mkdir(exist_ok=True, parents=True)
+                with tarfile.open(tar_file, "r:gz") as tar:
+                    tar.extractall(extract_dir)
+            except Exception:
+                pass
+
         for cfg in target.rglob("config.json"):
             return str(cfg.parent)
-        return str(target)
+
+        # No config found: fall back to HF model id if provided
+        fallback = os.getenv("MODEL_FALLBACK", "nanochat-students/nanochat-d20")
+        print0(f"[WARN] No config.json in artifact {art.name}; falling back to {fallback}")
+        return fallback
+
     return model_ref
 
 
