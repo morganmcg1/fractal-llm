@@ -33,8 +33,11 @@ uv run modal deploy src/modal_app.py
 # Check profile
 uv run modal profile current
 
-# Build SmolTalk shards (optional, faster startup)
-uv run data/prepare_smoltalk.py --budgets 1000 10000 100000 1000000 --out-dir /results/smoltalk_shards
+# Build SmolTalk shards on Modal (optional, faster startup)
+uv run modal run data/prepare_smoltalk.py --budgets 1000,10000,100000,1000000
+
+# Build shards locally (requires wandb auth)
+uv run data/prepare_smoltalk.py --budgets 1000 10000 100000 1000000 --out-dir ./smoltalk_shards
 
 # OOD eval snapshot (HellaSwag + ARC)
 uv run eval/run_lmeval.py --model nanochat-students/nanochat-d20 --tasks hellaswag,arc_challenge --max-samples 500
@@ -44,11 +47,11 @@ uv run modal environment create fractal-llm
 uv run modal token set --token-id $MODAL_TOKEN_ID --token-secret $MODAL_TOKEN_SECRET --profile=weightsandbiases
 uv run modal secret create --env fractal-llm wandb-secret WANDB_API_KEY="$WANDB_API_KEY"
 
-# Run nanochat d20 speedrun on 8×H100 (logs artifact to W&B)
-MODAL_ENVIRONMENT=fractal-llm uv run modal run src/nanochat_modal.py \
+# Run nanochat d20 speedrun on 8×H100 (logs artifact to W&B; detached so laptop can sleep)
+MODAL_ENVIRONMENT=fractal-llm uv run modal run --detach src/nanochat_modal.py \
   --wandb-name nanochat-d20-modal \
   --save-artifact-name nanochat-d20-speedrun
-# (Runs remotely; safe to close laptop after launch; passes --run to enable wandb)
+# WANDB_RUN is set from wandb-name to avoid 'dummy' runs
 ```
 
 **Test Results (verified 2024-12-29):**
@@ -60,10 +63,16 @@ MODAL_ENVIRONMENT=fractal-llm uv run modal run src/nanochat_modal.py \
 ```
 fractal-llm/
 ├── src/
-│   └── modal_app.py     # Modal H100 training functions
+│   ├── modal_app.py     # Modal H100 grid search training
+│   ├── nanochat_modal.py # Train nanochat-d20 on 8×H100, push to W&B
+│   └── visualize.py     # Post-hoc visualization and fractal analysis
+├── data/
+│   └── prepare_smoltalk.py  # Build SmolTalk shards (Modal or local)
+├── eval/
+│   └── run_lmeval.py    # OOD evaluation (HellaSwag, ARC)
 ├── claude-research.md   # Research notes and experiment design
 ├── .env                 # Modal credentials (gitignored)
-└── pyproject.toml       # Dependencies (uv)
+└── pyproject.toml       # Dependencies (uv, torch 2.8.0 cu128)
 ```
 
 ---

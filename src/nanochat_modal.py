@@ -28,7 +28,7 @@ image = (
     modal.Image.from_registry("nvidia/cuda:12.8.0-devel-ubuntu22.04", add_python="3.12")
     .apt_install("git", "curl")
     .run_commands(
-        # Install uv, then use uv pip (system) for everything\n"
+        # Install uv, then use uv pip (system) for everything
         "pip install uv>=0.4.0 "
         "&& uv pip install --system packaging ninja "
         "&& uv pip install --system --index-url https://download.pytorch.org/whl/cu128 "
@@ -85,6 +85,7 @@ def train_d20(args: Args):
     os.environ["WANDB_PROJECT"] = WANDB_PROJECT
     os.environ["WANDB_NAME"] = args.wandb_name
     os.environ["WANDB_MODE"] = "online"
+    os.environ["WANDB_RUN"] = args.wandb_name  # nanochat logging gate (defaults to 'dummy' if unset)
 
     workdir = Path("/workspace")
     repo_dir = workdir / "nanochat"

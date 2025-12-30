@@ -27,8 +27,8 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
 3) Create W&B secret in env (once):  
    `uv run modal secret create --env fractal-llm wandb-secret WANDB_API_KEY="$WANDB_API_KEY"` (load from `.env`)
 4) Train nanochat d20 on 8×H100 and log artifact to W&B (runs remotely; safe to close laptop after launch):  
-   `MODAL_ENVIRONMENT=fractal-llm uv run modal run src/nanochat_modal.py --wandb-name nanochat-d20-modal --save-artifact-name nanochat-d20-speedrun`
-   (We pass `--run <name>` into `speedrun.sh` so wandb logging is on.)
+   `MODAL_ENVIRONMENT=fractal-llm uv run modal run --detach src/nanochat_modal.py --wandb-name nanochat-d20-modal --save-artifact-name nanochat-d20-speedrun`
+   (Sets `WANDB_RUN=<wandb-name>` so nanochat wandb logging is enabled.)
 
 ## Notes
 - W&B: entity `morgan`, project `fractal-llm`. Fractal sweeps load the model from W&B artifact `nanochat-d20-speedrun:latest`.
