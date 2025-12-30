@@ -51,7 +51,7 @@ uv run modal secret create --env fractal-llm wandb-secret WANDB_API_KEY="$WANDB_
 MODAL_ENVIRONMENT=fractal-llm uv run modal run --detach src/nanochat_modal.py \
   --wandb-name nanochat-d20-modal \
   --save-artifact-name nanochat-d20-speedrun
-# WANDB_RUN is set from wandb-name to avoid 'dummy' runs
+# WANDB_RUN is set from wandb-name to avoid 'dummy' runs; artifact packs model_out.tar.gz + tokenizer/* + report.md
 ```
 
 **Test Results (verified 2024-12-29):**
