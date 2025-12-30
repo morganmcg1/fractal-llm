@@ -380,6 +380,14 @@ print0(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")
 print0(f"Total training time: {total_training_time/60:.2f}m")
 print0(f"Minimum validation bpb: {min_val_bpb:.4f}")
 
+# Log final checkpoint as a W&B artifact (stage-tagged)
+if master_process and not use_dummy_wandb:
+    artifact_name = f"{run}-artifact" if not run.endswith("-artifact") else run
+    art = wandb.Artifact(artifact_name, type="model")
+    if os.path.isdir(checkpoint_dir):
+        art.add_dir(checkpoint_dir, name="checkpoints")
+    wandb_run.log_artifact(art, aliases=["base", run, "latest"])
+
 # Log to report
 from nanochat.report import get_report
 get_report().log(section="Base model training", data=[

@@ -281,6 +281,14 @@ if master_process:
     )
     print(f"✅ Saved model checkpoint to {checkpoint_dir}")
 
+    # Log final checkpoint as a W&B artifact (stage-tagged)
+    if not use_dummy_wandb:
+        artifact_name = f"{run}-artifact" if not run.endswith("-artifact") else run
+        art = wandb.Artifact(artifact_name, type="model")
+        if os.path.isdir(checkpoint_dir):
+            art.add_dir(checkpoint_dir, name="checkpoints")
+        wandb_run.log_artifact(art, aliases=["sft", run, "latest"])
+
 # Log to report
 from nanochat.report import get_report
 get_report().log(section="Chat SFT", data=[
