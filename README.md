@@ -17,9 +17,9 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
 `uv run eval/run_lmeval.py --model nanochat-students/nanochat-d20 --tasks hellaswag,arc_challenge --max-samples 500`
 
 5) **Local finetune (nanochat-style, torchrun on 8 GPUs)**
-   - Fast smoke: `torchrun --standalone --nproc_per_node=1 -m src.finetune_modal_app -- --run smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=10 --eval_every=0`
+   - Fast smoke: `torchrun --standalone --nproc_per_node=1 -m src.finetune_modal_app --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=10 --eval_every=0`
    - Full grid + visuals (writes JSON+PNG+fractal JSON to `results/`, logs W&B if `WANDB_RUN` set):  
-     `torchrun --standalone --nproc_per_node=8 -m src.finetune_modal_app -- --grid=True --run fractal-grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5`
+     `torchrun --standalone --nproc_per_node=8 -m src.finetune_modal_app --grid=True --run=fractal-grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5`
 
 ## Modal setup (8×H100 nanochat training)
 1) Create env (once): `uv run modal environment create fractal-llm`

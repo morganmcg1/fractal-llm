@@ -125,6 +125,20 @@ config_keys = [
 # Allow CLI overrides using nanochat/configurator.py semantics if available.
 configurator = NANOCHAT_DIR / "nanochat" / "configurator.py"
 if configurator.exists():
+    # Allow both "--key=value" and "--key value" forms; normalize before running configurator.
+    if len(sys.argv) > 1:
+        new_args = []
+        args = sys.argv[1:]
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg.startswith("--") and "=" not in arg and i + 1 < len(args) and not args[i + 1].startswith("--"):
+                new_args.append(f"{arg}={args[i+1]}")
+                i += 2
+            else:
+                new_args.append(arg)
+                i += 1
+        sys.argv = [sys.argv[0]] + new_args
     exec(configurator.read_text())
 user_config = {k: globals()[k] for k in config_keys}
 
