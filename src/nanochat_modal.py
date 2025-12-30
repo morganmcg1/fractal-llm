@@ -33,7 +33,7 @@ image = (
         "&& uv pip install --system packaging ninja "
         "&& uv pip install --system --index-url https://download.pytorch.org/whl/cu128 "
         "torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 "
-        "&& uv pip install --system wandb>=0.23.1 simple-parsing>=0.1.7"
+        "&& uv pip install --system wandb>=0.23.1 simple-parsing>=0.1.7 rich>=14.0.0"
     )
 )
 
