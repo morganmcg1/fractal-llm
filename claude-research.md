@@ -235,7 +235,7 @@ fractal-llm/
 
 ### Current Configuration
 - **Model**: GPT-2 124M (HuggingFace `gpt2`)
-- **Dataset**: SmolTalk (`HuggingFaceTB/smoltalk`)
+- **Dataset**: DocVQA (`morgan/docvqa-nanochat`)
 - **Sequence length**: 128 tokens
 - **Grid axes**: Learning rate (1e-6 to 1e-3) × Training tokens (1K to 1M)
 

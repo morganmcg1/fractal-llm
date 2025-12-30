@@ -12,6 +12,75 @@ Run hyperparameter grid searches over LR × dataset size (and other axes) during
 
 ## Infrastructure
 
+### CoreWeave (Kubernetes GPU Cluster) - DevPod
+Remote development environment on CoreWeave's Kubernetes cluster with GPU access.
+
+- **Cluster**: `cks-wb3` (CoreWeave Kubernetes Service)
+- **GPU**: H200 (configurable 1-8 GPUs per workspace)
+- **Container**: `us-docker.pkg.dev/colab-images/public/runtime` (Google Colab image with CUDA, uv, Jupyter)
+- **Provider**: `kubernetes-crwv` (DevPod provider pointing to CoreWeave)
+
+**Prerequisites:**
+```bash
+# Install kubectl and devpod
+brew install kubectl devpod
+```
+
+**One-time setup:**
+```bash
+# 1. Download kubeconfig from https://console.coreweave.com/tokens
+# 2. Run the setup script (merges kubeconfig, creates devpod provider, adds alias)
+./crwv_cli/setup.sh ~/Downloads/CWKubeconfig
+
+# Or manually create provider with custom GPU count:
+devpod provider add kubernetes \
+  --name kubernetes-crwv \
+  -o KUBERNETES_CONTEXT=cks-wb3 \
+  -o RESOURCES="limits.nvidia.com/gpu=8" \
+  -o LABELS="devpod.sh/user=$(whoami)" \
+  -o INACTIVITY_TIMEOUT=1d
+```
+
+**Commands:**
+```bash
+# Start GPU dev environment (opens VSCode connected to remote container)
+corepod .
+# Or explicitly:
+devpod up --devcontainer-image us-docker.pkg.dev/colab-images/public/runtime --provider kubernetes-crwv .
+
+# SSH into running workspace
+ssh fractal-llm.devpod
+
+# List workspaces
+devpod list
+
+# Stop/delete workspace
+devpod stop fractal-llm
+devpod delete fractal-llm
+
+# Check cluster GPU usage
+kubectl top nodes --context cks-wb3
+kubectl get pods --all-namespaces --context cks-wb3 -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,GPU:.spec.containers[*].resources.limits.nvidia\.com/gpu' | grep -v "<none>"
+```
+
+**Changing GPU count:**
+```bash
+# Delete provider and recreate with new GPU count
+devpod provider delete kubernetes-crwv
+devpod provider add kubernetes --name kubernetes-crwv \
+  -o KUBERNETES_CONTEXT=cks-wb3 \
+  -o RESOURCES="limits.nvidia.com/gpu=4" \
+  -o LABELS="devpod.sh/user=$(whoami)" \
+  -o INACTIVITY_TIMEOUT=1d
+```
+
+**Notes:**
+- Workspace syncs local directory to `/workspaces/fractal-llm` in container (~1.2GB with data/)
+- Container auto-deletes after 1 day of inactivity
+- Do NOT create `.devcontainer.json` with a different image; the `corepod` alias specifies the GPU image
+
+---
+
 ### Modal (Cloud GPU) - VERIFIED WORKING
 - **Profile**: `weightsandbiases`
 - **GPU**: H100 (single or up to 8× per node)
@@ -33,12 +102,6 @@ uv run modal deploy src/modal_app.py
 
 # Check profile
 uv run modal profile current
-
-# Build SmolTalk shards on Modal (optional, faster startup)
-uv run modal run data/prepare_smoltalk.py --budgets 1000,10000,100000,1000000
-
-# Build shards locally (requires wandb auth)
-uv run data/prepare_smoltalk.py --budgets 1000 10000 100000 1000000 --out-dir ./smoltalk_shards
 
 # OOD eval snapshot (HellaSwag + ARC)
 uv run eval/run_lmeval.py --model nanochat-students/nanochat-d20 --tasks hellaswag,arc_challenge --max-samples 500
@@ -66,22 +129,71 @@ MODAL_ENVIRONMENT=fractal-llm uv run modal run src/nanochat_modal.py \
 **Test Results (verified 2024-12-29):**
 - H100 training: 9 steps in 1.27s
 - Loss: 3.39 → 3.00 (converged)
-- Dataset: SmolTalk (HuggingFaceTB/smoltalk)
+- Dataset: DocVQA (morgan/docvqa-nanochat)
 
 ### Project Structure
 ```
 fractal-llm/
 ├── src/
-│   ├── modal_app.py     # Modal H100 grid search training
-│   ├── nanochat_modal.py # Train nanochat-d20 on 8×H100, push to W&B
-│   └── visualize.py     # Post-hoc visualization and fractal analysis
+│   ├── modal_app.py        # Modal H100 grid search training
+│   ├── nanochat_modal.py   # Train nanochat-d20 on 8×H100, push to W&B
+│   └── visualize.py        # Post-hoc visualization and fractal analysis
 ├── data/
-│   └── prepare_smoltalk.py  # Build SmolTalk shards (Modal or local)
+│   ├── prepare_docvqa.py        # Process DocVQA from source dataset
+│   ├── push_docvqa_hub.py       # Push DocVQA to HuggingFace Hub
+│   └── download_docvqa_hub.py   # Download DocVQA from HF Hub → JSONL
 ├── eval/
-│   └── run_lmeval.py    # OOD evaluation (HellaSwag, ARC)
-├── claude-research.md   # Research notes and experiment design
-├── .env                 # Modal credentials (gitignored)
-└── pyproject.toml       # Dependencies (uv, torch 2.8.0 cu128)
+│   └── run_lmeval.py       # OOD evaluation (HellaSwag, ARC)
+├── third_party/
+│   └── nanochat/           # Vendored nanochat (pinned commit)
+├── claude-research.md      # Research notes and experiment design
+├── .env                    # Modal credentials (gitignored)
+└── pyproject.toml          # Dependencies (uv, torch 2.8.0 cu128)
+```
+
+### Datasets
+
+#### DocVQA (Document QA)
+Single-page document QA dataset for nanochat fine-tuning.
+- **HF Hub**: [morgan/docvqa-nanochat](https://huggingface.co/datasets/morgan/docvqa-nanochat)
+- **Source**: [pixparse/docvqa-single-page-questions](https://huggingface.co/datasets/pixparse/docvqa-single-page-questions)
+- **Stats**: 39,455 train / 5,349 val samples, ~17.7M tokens total
+- **Tokenizer**: tiktoken cl100k_base (GPT-4 style BPE)
+
+**Processing features:**
+- Answer-priority truncation: OCR lines containing the answer are always included
+- Max 1750 tokens per example (for 2048 context window)
+- Short answers only (≤150 chars)
+- Page numbers from `other_metadata['ucsf_document_page_no']`
+- Match types tracked: exact, fuzzy, none
+
+**Commands:**
+```bash
+# Download from HF Hub (auto-skips if files exist with correct counts)
+uv run data/download_docvqa_hub.py --all --out_dir data/
+
+# Force re-download
+uv run data/download_docvqa_hub.py --all --force
+
+# Regenerate from source (slow, ~45k samples with parallel tokenization)
+uv run data/prepare_docvqa.py --out_path data/docvqa_train.jsonl --split train --workers 8
+uv run data/prepare_docvqa.py --out_path data/docvqa_val.jsonl --split validation --workers 8
+
+# Push to HF Hub (requires HF token)
+uv run data/push_docvqa_hub.py --train data/docvqa_train.hub.jsonl --val data/docvqa_val.hub.jsonl --repo morgan/docvqa-nanochat --token $HF_TOKEN
+```
+
+**Use in training scripts:**
+```python
+from data.download_docvqa_hub import ensure_docvqa_jsonl
+
+# Auto-downloads from HF Hub if missing or count mismatch
+train_path = ensure_docvqa_jsonl("train", "data/docvqa_train.jsonl")
+val_path = ensure_docvqa_jsonl("validation", "data/docvqa_val.jsonl")
+
+# Use with nanochat CustomJSON
+from tasks.customjson import CustomJSON
+train_ds = CustomJSON(filepath=str(train_path))
 ```
 
 ---

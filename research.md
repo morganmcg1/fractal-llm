@@ -25,9 +25,9 @@ Recent work ([arXiv:2501.04286](https://arxiv.org/html/2501.04286)) extended thi
 
 ### 2.1 Model & Checkpoint
 
-**Primary choice**: [nanochat-students/nanochat-d20](https://huggingface.co/nanochat-students/nanochat-d20) (561M params)  
-- Pre-trained on FineWeb-EDU, mid-trained on SmolTalk/MMLU/GSM8K  
-- Already instruction-tuned, perfect for studying SFT dynamics  
+**Primary choice**: [nanochat-students/nanochat-d20](https://huggingface.co/nanochat-students/nanochat-d20) (561M params)
+- Pre-trained on FineWeb-EDU, mid-trained on MMLU/GSM8K
+- Already instruction-tuned, perfect for studying SFT dynamics
 - Available on HuggingFace for easy download  
 
 *(We standardize on nanochat-d20 for all runs.)*
@@ -59,10 +59,11 @@ Implementation detail: each run uses `steps = ceil(tokens / (batch_size * seq_le
 
 ### 2.4 SFT Dataset
 
-**Training data**: Subset of [SmolTalk](https://huggingface.co/datasets/HuggingFaceTB/smoltalk) conversations  
-- Tokenized to ≤128 tokens/sequence  
-- Shards prebuilt via `data/prepare_smoltalk.py` at 1K, 10K, 100K, 1M tokens stored in `/results/smoltalk_shards`  
-\n**Held-out validation**: 50K tokens from different SmolTalk split (same tokenizer)
+**Training data**: [DocVQA](https://huggingface.co/datasets/morgan/docvqa-nanochat) document QA dataset
+- 39,455 training samples, ~15.5M tokens
+- Streamed from HuggingFace Hub (morgan/docvqa-nanochat)
+
+**Held-out validation**: 5,349 validation samples from DocVQA
 
 ### 2.5 Convergence Classification
 
@@ -138,10 +139,9 @@ def box_counting_dimension(binary_image):
 
 ## 5. Implementation Plan
 
-**Phase 1: Setup (fast)**  
-1. `uv run data/prepare_smoltalk.py --budgets 1000 10000 100000 1000000 --out-dir /results/smoltalk_shards`  
-2. Confirm Modal profile `weightsandbiases`, secret `wandb-secret`.  
-3. `uv run modal run src/modal_app.py --test-only` (nanochat-d20, H100).
+**Phase 1: Setup (fast)**
+1. Confirm Modal profile `weightsandbiases`, secret `wandb-secret`.
+2. `uv run modal run src/modal_app.py --test-only` (nanochat-d20, H100).
 
 **Phase 2: Pilot Sweep (32×32)**  
 1. `uv run modal run src/modal_app.py --resolution 32` (tokens respected via steps=ceil(tokens/(bs*seq_len))).  
@@ -169,7 +169,8 @@ fractal-llm/
 │   ├── modal_app.py      # Modal grid search + fractal viz + W&B logging
 │   └── visualize.py      # Offline visualizations
 ├── data/
-│   └── prepare_smoltalk.py  # Build SmolTalk shards (1K–1M tokens)
+│   ├── prepare_docvqa.py        # Process DocVQA from source
+│   └── download_docvqa_hub.py   # Download DocVQA from HF Hub
 ├── eval/
 │   └── run_lmeval.py     # lm-eval-harness wrapper (HellaSwag/ARC)
 ├── results/              # Figures, grids (created at runtime)
