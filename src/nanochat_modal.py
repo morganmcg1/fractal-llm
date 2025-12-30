@@ -100,9 +100,9 @@ def train_d20(args: Args):
     # Install dependencies via uv (editable install)
     subprocess.run(["uv", "pip", "install", "--system", "-e", "."], cwd=repo_dir, check=True)
 
-    # Run speedrun (d20) with W&B env set
-    console.print(Panel("Starting speedrun.sh (d20, 8×H100)", title="Train"))
-    subprocess.run(["bash", "speedrun.sh"], cwd=repo_dir, check=True)
+    # Run speedrun (d20) with W&B env set and explicit run name to enable wandb logging
+    console.print(Panel(f"Starting speedrun.sh (d20, 8×H100) run={args.wandb_name}", title="Train"))
+    subprocess.run(["bash", "speedrun.sh", "--run", args.wandb_name], cwd=repo_dir, check=True)
 
     # Collect artifacts
     outputs = {}
