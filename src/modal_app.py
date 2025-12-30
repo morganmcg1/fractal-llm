@@ -23,7 +23,7 @@ image = (
     .run_commands(
         "pip install uv>=0.4.0 "
         "&& uv pip install --system --index-url https://download.pytorch.org/whl/cu124 "
-        "torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 "
+        "torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 "
         "&& uv pip install --system "
         "transformers>=4.47.0 "
         "datasets>=3.2.0 "
