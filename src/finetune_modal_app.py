@@ -42,10 +42,6 @@ import wandb
 from torch.utils.data import IterableDataset, DataLoader
 from datasets import load_dataset
 
-# nanochat imports
-from nanochat.checkpoint_manager import build_model, find_last_step
-from nanochat.tokenizer import get_tokenizer
-
 # ---------------------------------------------------------------------------
 # Wire nanochat helpers (style compatibility)
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -62,6 +58,10 @@ for _cand in DOTENV_CANDIDATES:
 
 if NANOCHAT_DIR.exists() and str(NANOCHAT_DIR) not in sys.path:
     sys.path.insert(0, str(NANOCHAT_DIR))
+
+# nanochat imports (after sys.path wiring)
+from nanochat.checkpoint_manager import build_model, find_last_step
+from nanochat.tokenizer import get_tokenizer
 
 try:
     from nanochat.common import (
