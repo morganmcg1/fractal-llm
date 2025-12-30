@@ -37,6 +37,8 @@ python -m pip install --no-cache-dir --index-url https://download.pytorch.org/wh
   torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0
 UV_CACHE_DIR=/workspaces/.uv-cache UV_LINK_MODE=symlink uv sync --extra gpu
 ```
+If checkpoints/tokenizer are filling the small workspace volume, relocate nanochat data by exporting:
+`export NANOCHAT_BASE_DIR=/var/tmp/nanochat` (or any larger mount) before running `speedrun.sh`.
 
 ## Modal setup (8×H100 nanochat training)
 1) Create env (once): `uv run modal environment create fractal-llm`
