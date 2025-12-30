@@ -48,7 +48,7 @@ uv run modal secret create --env fractal-llm wandb-secret WANDB_API_KEY="$WANDB_
 MODAL_ENVIRONMENT=fractal-llm uv run modal run src/nanochat_modal.py \
   --wandb-name nanochat-d20-modal \
   --save-artifact-name nanochat-d20-speedrun
-# (Runs remotely; safe to close laptop after launch)
+# (Runs remotely; safe to close laptop after launch; passes --run to enable wandb)
 ```
 
 **Test Results (verified 2024-12-29):**
