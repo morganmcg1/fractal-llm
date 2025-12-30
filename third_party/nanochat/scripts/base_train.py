@@ -12,6 +12,7 @@ python -m scripts.base_train --depth=4 --max_seq_len=512 --device_batch_size=1 -
 """
 
 import os
+import shutil
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import time
 from contextlib import nullcontext
@@ -386,8 +387,16 @@ if master_process and not use_dummy_wandb:
     art = wandb.Artifact(artifact_name, type="model")
     if os.path.isdir(checkpoint_dir):
         art.add_dir(checkpoint_dir, name="checkpoints")
-    report_path = os.path.join(os.getcwd(), "report.md")
-    if os.path.exists(report_path):
+    # Generate latest report and attach stage-specific snapshot
+    try:
+        from nanochat.report import get_report
+        report_path = get_report().generate()
+    except Exception:
+        report_path = "report.md" if os.path.exists("report.md") else None
+    if report_path and os.path.exists(report_path):
+        stage_report = os.path.join(os.path.dirname(report_path), "report_base.md")
+        shutil.copy(report_path, stage_report)
+        art.add_file(stage_report, name="report_base.md")
         art.add_file(report_path, name="report.md")
         try:
             import markdown as md

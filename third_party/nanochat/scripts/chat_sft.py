@@ -16,6 +16,7 @@ import wandb
 import torch
 import torch.distributed as dist
 from contextlib import nullcontext
+import shutil
 
 from nanochat.common import compute_init, compute_cleanup, get_base_dir, print0, DummyWandb, autodetect_device_type
 from nanochat.checkpoint_manager import load_model
@@ -294,6 +295,9 @@ if master_process:
         except Exception:
             report_path = "report.md" if os.path.exists("report.md") else None
         if report_path and os.path.exists(report_path):
+            stage_report = os.path.join(os.path.dirname(report_path), "report_sft.md")
+            shutil.copy(report_path, stage_report)
+            art.add_file(stage_report, name="report_sft.md")
             art.add_file(report_path, name="report.md")
             try:
                 import markdown as md

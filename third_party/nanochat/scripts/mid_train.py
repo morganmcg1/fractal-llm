@@ -11,6 +11,7 @@ torchrun --standalone --nproc_per_node=8 -m scripts.mid_train -- --device_batch_
 
 from collections import deque
 import os
+import shutil
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import time
 import wandb
@@ -312,8 +313,15 @@ if master_process and not use_dummy_wandb and not dry_run:
     art = wandb.Artifact(artifact_name, type="model")
     if os.path.isdir(checkpoint_dir):
         art.add_dir(checkpoint_dir, name="checkpoints")
-    report_path = os.path.join(os.getcwd(), "report.md")
-    if os.path.exists(report_path):
+    try:
+        from nanochat.report import get_report
+        report_path = get_report().generate()
+    except Exception:
+        report_path = "report.md" if os.path.exists("report.md") else None
+    if report_path and os.path.exists(report_path):
+        stage_report = os.path.join(os.path.dirname(report_path), "report_mid.md")
+        shutil.copy(report_path, stage_report)
+        art.add_file(stage_report, name="report_mid.md")
         art.add_file(report_path, name="report.md")
         try:
             import markdown as md
