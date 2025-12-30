@@ -22,6 +22,7 @@ import os
 import random
 import sys
 import itertools
+from dotenv import load_dotenv
 from contextlib import nullcontext
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -46,6 +47,16 @@ from datasets import load_dataset
 # Wire nanochat helpers (style compatibility)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 NANOCHAT_DIR = REPO_ROOT / "third_party" / "nanochat"
+DOTENV_CANDIDATES = [
+    REPO_ROOT / ".env",
+    Path(".env"),
+    Path("/workspace/.env"),
+    Path("/root/.env"),
+]
+for _cand in DOTENV_CANDIDATES:
+    if _cand.exists():
+        load_dotenv(_cand, override=False)
+
 if NANOCHAT_DIR.exists() and str(NANOCHAT_DIR) not in sys.path:
     sys.path.insert(0, str(NANOCHAT_DIR))
 
@@ -453,6 +464,7 @@ def train_once(
             name=run_name,
             config=user_config | {"learning_rate": lr, "num_tokens": tokens_goal, "grid_i": grid_i, "grid_j": grid_j},
             save_code=True,
+            settings=wandb.Settings(init_timeout=300, _service_wait=300),
         )
     )
 
