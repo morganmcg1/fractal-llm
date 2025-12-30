@@ -1,6 +1,6 @@
 # fractal-llm
 
-Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 and SmolTalk on Modal H100s.
+Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 and SmolTalk on Modal H100s. We vendor nanochat under `third_party/nanochat` (commit `8f979a8bdab491c4c152ce5c87f90c2ec31d0845`, documented in `third_party/nanochat/COMMIT_INFO.txt`) so training uses our patched copy.
 
 ## Quickstart
 
@@ -26,11 +26,16 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    (token currently in `.env` as `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`)
 3) Create W&B secret in env (once):  
    `uv run modal secret create --env fractal-llm wandb-secret WANDB_API_KEY="$WANDB_API_KEY"` (load from `.env`)
-4) Train nanochat d20 on 8×H100 and log artifact to W&B (runs remotely; safe to close laptop after launch):  
+4) Train nanochat d20 on 8×H100 using the vendored nanochat copy and log artifact to W&B (runs remotely; safe to close laptop after launch):  
    `MODAL_ENVIRONMENT=fractal-llm uv run modal run --detach src/nanochat_modal.py --wandb-name nanochat-d20-modal --save-artifact-name nanochat-d20-speedrun`
-   (Sets `WANDB_RUN=<wandb-name>` so nanochat wandb logging is enabled; artifact includes model_out.tar.gz + tokenizer/* + report.md)
+   (Sets `WANDB_RUN=<wandb-name>` so nanochat wandb logging is enabled; artifact includes model_out.tar.gz + tokenizer/* + report.md; uses `third_party/nanochat` pinned commit noted above)
+
+Smoke test (fast logging + artifact in one run)
+`MODAL_ENVIRONMENT=fractal-llm uv run modal run src/nanochat_modal.py --wandb-name smoke-mini --save-artifact-name smoke-mini-artifact --smoke`
+- Runs a 3-layer tiny model for 10 steps on 8 GPUs, logs every step, and uploads a smoke artifact (checkpoint + tokenizer stub + report) to the same W&B run.
 
 ## Notes
 - W&B: entity `morgan`, project `fractal-llm`. Fractal sweeps load the model from W&B artifact `nanochat-d20-speedrun:latest`.
 - Modal training image: CUDA 12.8, torch 2.8.0+cu128, installs via `uv pip`; `python-dotenv` and `rich` included; flash-attn omitted.
 - Token budget per grid point is respected (`steps = ceil(tokens / (bs*seq_len))`).
+- WandB terminal UI (beta leet): inspect any run locally via `uv run wandb beta leet https://wandb.ai/morgan/fractal-llm/runs/<run_id>` (handy for Modal jobs).

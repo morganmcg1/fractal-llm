@@ -16,9 +16,18 @@ import tarfile
 
 import modal
 import simple_parsing as sp
+from dotenv import load_dotenv
 
-WANDB_ENTITY = "morgan"
-WANDB_PROJECT = "fractal-llm"
+LOCAL_NANOCHAT_DIR = Path(__file__).resolve().parent.parent / "third_party" / "nanochat"
+LOCAL_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+# Load .env from project root
+if LOCAL_ENV_PATH.exists():
+    load_dotenv(LOCAL_ENV_PATH, override=False)
+
+# Configuration from .env (with defaults for backwards compatibility)
+WANDB_ENTITY = os.getenv("WANDB_ENTITY", "morgan")
+WANDB_PROJECT = os.getenv("WANDB_PROJECT", "fractal-llm")
 NANOCHAT_REPO = "https://github.com/karpathy/nanochat.git"
 BRANCH = ""  # use upstream default branch
 
@@ -35,6 +44,8 @@ image = (
         "torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 "
         "&& uv pip install --system wandb>=0.23.1 simple-parsing>=0.1.7 rich>=14.0.0 python-dotenv>=1.0.1"
     )
+    # bundle vendored nanochat into the image so Mount API isn't needed
+    .add_local_dir(LOCAL_NANOCHAT_DIR, "/workspace/nanochat_src")
 )
 
 
@@ -48,6 +59,7 @@ class Args:
     wandb_name: str = "nanochat-d20-modal"
     repo_branch: str = BRANCH
     save_artifact_name: str = "nanochat-d20-speedrun"
+    smoke: bool = False  # fast logging-only test path
 
 
 def _pack_dir(src: Path, dest_tar: Path):
@@ -69,6 +81,7 @@ def _pack_dir(src: Path, dest_tar: Path):
 def train_d20(args: Args):
     import subprocess
     import json
+    import shutil
     import wandb
     from rich.console import Console
     from rich.panel import Panel
@@ -86,17 +99,17 @@ def train_d20(args: Args):
     os.environ["WANDB_NAME"] = args.wandb_name
     os.environ["WANDB_MODE"] = "online"
     os.environ["WANDB_RUN"] = args.wandb_name  # nanochat logging gate (defaults to 'dummy' if unset)
+    os.environ["SAVE_ARTIFACT_NAME"] = args.save_artifact_name
+    if args.smoke:
+        os.environ["SMOKE"] = "1"
 
     workdir = Path("/workspace")
     repo_dir = workdir / "nanochat"
 
-    # Clone repo (default branch if not found)
-    clone_cmd = ["git", "clone", "--depth", "1", NANOCHAT_REPO, str(repo_dir)] if not args.repo_branch else \
-                ["git", "clone", "--depth", "1", "--branch", args.repo_branch, NANOCHAT_REPO, str(repo_dir)]
-    try:
-        subprocess.run(clone_cmd, check=True)
-    except subprocess.CalledProcessError:
-        subprocess.run(["git", "clone", "--depth", "1", NANOCHAT_REPO, str(repo_dir)], check=True)
+    # Use vendored nanochat (mounted from host) so our patches and pinned commit are used.
+    if repo_dir.exists():
+        shutil.rmtree(repo_dir)
+    shutil.copytree("/workspace/nanochat_src", repo_dir, dirs_exist_ok=False)
 
     # Install dependencies via uv (editable install)
     subprocess.run(["uv", "pip", "install", "--system", "-e", "."], cwd=repo_dir, check=True)
@@ -118,26 +131,42 @@ def train_d20(args: Args):
     if out_bundle:
         outputs["out_tar"] = str(out_bundle)
 
-    # Upload to W&B as artifact
-    run = wandb.init(
-        entity=WANDB_ENTITY,
-        project=WANDB_PROJECT,
-        name=args.wandb_name,
-        tags=["nanochat", "d20", "modal", "8xH100"],
-        config={"repo": NANOCHAT_REPO, "branch": args.repo_branch, "gpus": 8, "model": "d20"},
-        reinit=True,
-    )
+    # Collect tokenizer assets to ensure downstream finetuning can load from artifact
+    tokenizer_dir = workdir / "tokenizer"
+    tokenizer_dir.mkdir(exist_ok=True)
+    tokenizer_files = []
+    for pattern in ["tokenizer.model", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt"]:
+        tokenizer_files.extend(repo_dir.rglob(pattern))
+    if tokenizer_files:
+        for p in tokenizer_files:
+            target = tokenizer_dir / p.name
+            target.write_bytes(p.read_bytes())
+        outputs["tokenizer_dir"] = str(tokenizer_dir)
 
-    artifact = wandb.Artifact(args.save_artifact_name, type="model")
-    for label, path in outputs.items():
-        artifact.add_file(path, name=Path(path).name if label == "out_tar" else label)
-    run.log_artifact(artifact)
+    # Upload to W&B as artifact (skip here in smoke; handled in speedrun.sh to keep single run)
+    if not args.smoke:
+        run = wandb.init(
+            entity=WANDB_ENTITY,
+            project=WANDB_PROJECT,
+            name=args.wandb_name,
+            tags=["nanochat", "d20", "modal", "8xH100"],
+            config={"repo": NANOCHAT_REPO, "branch": args.repo_branch, "gpus": 8, "model": "d20"},
+            reinit=True,
+        )
 
-    # Save summary
-    if report.exists():
-        with open(report, "r", encoding="utf-8") as f:
-            run.summary["report_md_head"] = f.read()[:2000]
-    run.finish()
+        artifact = wandb.Artifact(args.save_artifact_name, type="model")
+        for label, path in outputs.items():
+            if label == "tokenizer_dir":
+                artifact.add_dir(path, name="tokenizer")
+            else:
+                artifact.add_file(path, name=Path(path).name if label == "out_tar" else label)
+        run.log_artifact(artifact)
+
+        # Save summary
+        if report.exists():
+            with open(report, "r", encoding="utf-8") as f:
+                run.summary["report_md_head"] = f.read()[:2000]
+        run.finish()
 
     # Persist artifacts to volume
     results_dir = Path("/results/nanochat")
@@ -157,6 +186,7 @@ def main(
     wandb_name: str = "nanochat-d20-modal",
     repo_branch: str = BRANCH,
     save_artifact_name: str = "nanochat-d20-speedrun",
+    smoke: bool = False,
 ):
     """Kick off a Modal run for nanochat d20."""
-    train_d20.remote(Args(wandb_name=wandb_name, repo_branch=repo_branch, save_artifact_name=save_artifact_name))
+    train_d20.remote(Args(wandb_name=wandb_name, repo_branch=repo_branch, save_artifact_name=save_artifact_name, smoke=smoke))

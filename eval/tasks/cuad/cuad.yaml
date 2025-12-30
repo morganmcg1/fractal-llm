@@ -1,0 +1,31 @@
+# CUAD (Contract Understanding Atticus Dataset) task for lm-eval
+# Extractive QA on legal contracts - 41 clause categories
+# Dataset: theatticusproject/cuad-qa (PR #6 parquet revision)
+
+task: cuad
+dataset_path: theatticusproject/cuad-qa
+dataset_name: null
+dataset_kwargs:
+  revision: refs/pr/6
+output_type: generate_until
+training_split: train
+test_split: test
+doc_to_text: !function utils.doc_to_text
+doc_to_target: !function utils.doc_to_target
+process_results: !function utils.process_results
+generation_kwargs:
+  until:
+    - "\n\n"
+    - "<|end|>"
+  max_gen_toks: 256
+  do_sample: false
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+  - metric: f1
+    aggregation: mean
+    higher_is_better: true
+metadata:
+  version: 1.0
+  description: "Contract Understanding Atticus Dataset - Legal clause extraction"

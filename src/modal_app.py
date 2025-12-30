@@ -7,15 +7,27 @@ the fractal boundary of neural network trainability.
 Uses nanochat-d20 (561M) model from HuggingFace with SmolTalk SFT data.
 """
 
+import os
+from pathlib import Path
+
 import modal
+from dotenv import load_dotenv
+
+# Load .env from project root (works locally; Modal containers use secrets)
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path, override=False)
 
 app = modal.App("fractal-llm", default_profile="weightsandbiases")
 
 volume = modal.Volume.from_name("fractal-llm-results", create_if_missing=True)
 
-# W&B configuration
-WANDB_ENTITY = "morgan"
-WANDB_PROJECT = "fractal-llm"
+# Configuration from .env (with defaults for backwards compatibility)
+WANDB_ENTITY = os.getenv("WANDB_ENTITY", "morgan")
+WANDB_PROJECT = os.getenv("WANDB_PROJECT", "fractal-llm")
+MODEL_ARTIFACT = os.getenv("MODEL_ARTIFACT", "wandb:morgan/fractal-llm/nanochat-d20-speedrun:latest")
+DATASET_ID = os.getenv("DATASET_ID", "HuggingFaceTB/smoltalk")
+MAX_SEQ_LEN = int(os.getenv("MAX_SEQ_LEN", "128"))
 
 # H100-optimized image with CUDA support (Torch CU128 wheels), installs via uv pip
 image = (
@@ -44,18 +56,71 @@ image = (
     )
 )
 
-# Primary model for experiments (matches research plan)
-# Pull from W&B artifact produced by nanochat_modal.py speedrun.
-MODEL_ID = "wandb:morgan/fractal-llm/nanochat-d20-speedrun:latest"
-DATASET_ID = "HuggingFaceTB/smoltalk"
-MAX_SEQ_LEN = 128
+
+def resolve_model_path(model_id: str) -> str:
+    """
+    Resolve a model identifier to a local path.
+
+    Supports:
+    - W&B artifact paths: "wandb:<entity>/<project>/<name>:<version>"
+    - HuggingFace Hub paths: "org/model-name"
+    - Local paths: "/path/to/model"
+
+    Returns local path after downloading if necessary.
+    """
+    import os
+    from pathlib import Path
+
+    if model_id.startswith("wandb:"):
+        import wandb
+
+        # Parse wandb:entity/project/artifact:version
+        artifact_path = model_id[6:]  # Remove "wandb:" prefix
+        api = wandb.Api()
+        artifact = api.artifact(artifact_path, type="model")
+
+        # Download to shared volume cache so starmap workers can reuse
+        cache_root = Path("/results/model_cache")
+        cache_root.mkdir(parents=True, exist_ok=True)
+        cache_dir = cache_root / artifact.name.replace(":", "_")
+        if not cache_dir.exists():
+            artifact_dir = artifact.download(root=str(cache_dir))
+        else:
+            artifact_dir = str(cache_dir)
+
+        # Look for model files in the artifact
+        # nanochat artifacts may have the model in a subdirectory or tar
+        artifact_path = Path(artifact_dir)
+
+        # Check for tar.gz and extract if needed
+        for tar_file in artifact_path.glob("*.tar.gz"):
+            import tarfile
+
+            extract_dir = artifact_path / "extracted"
+            if not extract_dir.exists():
+                with tarfile.open(tar_file, "r:gz") as tar:
+                    tar.extractall(extract_dir)
+
+            # Find the model directory (look for config.json or model files)
+            for subdir in extract_dir.rglob("config.json"):
+                return str(subdir.parent)
+
+        # If no tar, look for config.json directly
+        for config in artifact_path.rglob("config.json"):
+            return str(config.parent)
+
+        # Fallback to artifact root
+        return artifact_dir
+
+    # HuggingFace Hub or local path - return as-is
+    return model_id
 
 
 @app.function(
     gpu="H100",
     image=image,
     volumes={"/results": volume},
-    timeout=300,  # 5 min max per run
+    secrets=[modal.Secret.from_name("wandb-secret")],
 )
 def train_single_run(
     learning_rate: float,
@@ -117,20 +182,24 @@ def train_single_run(
 
     run_id = f"grid_{grid_i:03d}_{grid_j:03d}"
 
+    # Resolve model path (downloads W&B artifact if needed)
+    model_path = resolve_model_path(MODEL_ARTIFACT)
+
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     # Load model with bf16 for H100
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
+        model_path,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
     )
     model.config.use_cache = False
 
     # Try to load a prebuilt shard matching the requested token budget (optional)
+    # Select the smallest shard that has >= num_tokens (so we have enough data)
     shard_dir = Path("/results/smoltalk_shards")
     shard_path: Path | None = None
     if shard_dir.exists():
@@ -140,9 +209,10 @@ def train_single_run(
             if m:
                 shard_tokens = int(m.group(1))
                 shard_candidates.append((shard_tokens, p))
-        shard_candidates = [c for c in shard_candidates if c[0] <= num_tokens]
+        # Filter to shards with enough tokens, then pick smallest to minimize load time
+        shard_candidates = [c for c in shard_candidates if c[0] >= num_tokens]
         if shard_candidates:
-            shard_tokens, shard_path = max(shard_candidates, key=lambda x: x[0])
+            shard_tokens, shard_path = min(shard_candidates, key=lambda x: x[0])
 
     # Load and prepare SmolTalk dataset with deterministic ordering
     texts: list[str] = []
@@ -237,13 +307,17 @@ def train_single_run(
             padding="max_length",
             return_tensors="pt",
         )
-        return TextDataset(encodings)
+        # Count non-pad tokens to align step schedule with requested budget
+        seq_token_counts = encodings["attention_mask"].sum(dim=1)  # shape (N,)
+        total_nonpad_tokens = int(seq_token_counts.sum().item())
+        avg_tokens_per_seq = float(seq_token_counts.float().mean().item())
+        return TextDataset(encodings), total_nonpad_tokens, avg_tokens_per_seq
 
-    train_dataset = tokenize_texts(texts)
+    train_dataset, total_nonpad_tokens, avg_tokens_per_seq = tokenize_texts(texts)
 
-    # Calculate steps based on tokens (respect requested token budget)
-    tokens_per_step = batch_size * MAX_SEQ_LEN
-    steps_target = max(1, math.ceil(num_tokens / tokens_per_step))
+    # Calculate steps so that steps * batch_size * avg_tokens_per_seq ≈ num_tokens
+    effective_tokens_per_step = batch_size * max(avg_tokens_per_seq, 1.0)
+    steps_target = max(1, math.ceil(num_tokens / effective_tokens_per_step))
     calculated_steps = steps_target if max_steps is None else max(1, min(steps_target, max_steps))
 
     # Training arguments optimized for H100
@@ -260,10 +334,10 @@ def train_single_run(
         bf16=True,
         gradient_checkpointing=False,
         dataloader_num_workers=0,
-        optim="adamw_torch_fused",
+        optim="adamw_torch",
         seed=seed,
         data_seed=seed,
-        dataloader_drop_last=True,
+        dataloader_drop_last=False,
     )
 
     # Data collator for causal LM
@@ -314,7 +388,11 @@ def train_single_run(
         "grid_j": grid_j,
         "learning_rate": learning_rate,
         "num_tokens": num_tokens,
-        "tokens_used": total_tokens,
+        "tokens_requested": num_tokens,
+        "tokens_collected": total_tokens,
+        "tokens_nonpad_collected": total_nonpad_tokens,
+        "tokens_used_est": int(calculated_steps * effective_tokens_per_step),
+        "avg_tokens_per_seq": avg_tokens_per_seq,
         "seed": seed,
         "final_loss": float(final_loss) if not math.isnan(final_loss) else float("inf"),
         "converged": converged,
@@ -327,7 +405,6 @@ def train_single_run(
 @app.function(
     image=image,
     volumes={"/results": volume},
-    timeout=86400,  # 24 hours for full grid
     secrets=[modal.Secret.from_name("wandb-secret")],
 )
 def run_grid_search(
@@ -364,7 +441,7 @@ def run_grid_search(
         "tokens_min": tokens_min,
         "tokens_max": tokens_max,
         "resolution": resolution,
-        "model_id": MODEL_ID,
+        "model_artifact": MODEL_ARTIFACT,
         "dataset_id": DATASET_ID,
         "max_seq_len": MAX_SEQ_LEN,
         "total_runs": resolution ** 2,
@@ -459,7 +536,7 @@ def run_grid_search(
         # Log batch metrics to W&B
         batch_converged = sum(1 for r in batch_results if r.get("converged", False))
         batch_losses = [r["final_loss"] for r in batch_results if r.get("converged", False)]
-        batch_tokens = [r.get("tokens_used", r.get("num_tokens", 0)) for r in batch_results]
+        batch_tokens = [r.get("tokens_used_est", r.get("num_tokens", 0)) for r in batch_results]
         batch_runtime = [r.get("runtime_s") for r in batch_results if r.get("runtime_s") is not None]
 
         wandb.log({
@@ -618,14 +695,28 @@ def run_grid_search(
 
     # Log results table
     results_table = wandb.Table(
-        columns=["grid_i", "grid_j", "learning_rate", "num_tokens", "tokens_used", "final_loss", "converged", "runtime_s", "error"],
+        columns=[
+            "grid_i",
+            "grid_j",
+            "learning_rate",
+            "num_tokens",
+            "tokens_nonpad_collected",
+            "tokens_used_est",
+            "avg_tokens_per_seq",
+            "final_loss",
+            "converged",
+            "runtime_s",
+            "error",
+        ],
         data=[
             [
                 r.get("grid_i"),
                 r.get("grid_j"),
                 r.get("learning_rate"),
                 r.get("num_tokens"),
-                r.get("tokens_used"),
+                r.get("tokens_nonpad_collected"),
+                r.get("tokens_used_est"),
+                r.get("avg_tokens_per_seq"),
                 r.get("final_loss"),
                 r.get("converged"),
                 r.get("runtime_s"),
@@ -645,7 +736,6 @@ def run_grid_search(
 @app.function(
     image=image,
     volumes={"/results": volume},
-    timeout=3600,
     secrets=[modal.Secret.from_name("wandb-secret")],
 )
 def compute_fractal_dimension(results_path: str, wandb_run_id: str | None = None) -> dict:
@@ -707,8 +797,8 @@ def compute_fractal_dimension(results_path: str, wandb_run_id: str | None = None
                     count += 1
         return count
 
-    # Compute for multiple box sizes
-    sizes = [2, 4, 8, 16, 32]
+    # Compute for multiple box sizes (include 64 for higher resolution grids)
+    sizes = [2, 4, 8, 16, 32, 64]
     sizes = [s for s in sizes if s < resolution]
     counts = [box_count(boundary, s) for s in sizes]
 

@@ -222,7 +222,7 @@ def plot_fractal_analysis(
                     count += 1
         return count
 
-    # Compute for multiple box sizes
+    # Compute for multiple box sizes (include 64 for higher resolution grids)
     sizes = [2, 4, 8, 16, 32, 64]
     sizes = [s for s in sizes if s < resolution]
     counts = [box_count(boundary, s) for s in sizes]

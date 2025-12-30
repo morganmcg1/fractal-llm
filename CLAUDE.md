@@ -17,7 +17,8 @@ Run hyperparameter grid searches over LR × dataset size (and other axes) during
 - **GPU**: H100 (single or up to 8× per node)
 - **Volume**: `fractal-llm-results` for persistent storage
 - **Image**: `nvidia/cuda:12.8.0-devel-ubuntu22.04` (Torch 2.8.0+cu128 via uv pip; rich + python-dotenv included)
-- **Model**: nanochat-d20 (561M) from W&B artifact `morgan/fractal-llm/nanochat-d20-speedrun:latest`
+- **Model code**: vendored `third_party/nanochat` (commit `8f979a8bdab491c4c152ce5c87f90c2ec31d0845`, 2025-12-28). Keep this copy in sync if you update upstream. Commit info lives in `third_party/nanochat/COMMIT_INFO.txt`.
+- **Model artifact**: nanochat-d20 (561M) from W&B artifact `morgan/fractal-llm/nanochat-d20-speedrun:latest`
 
 **Commands:**
 ```bash
@@ -48,10 +49,18 @@ uv run modal token set --token-id $MODAL_TOKEN_ID --token-secret $MODAL_TOKEN_SE
 uv run modal secret create --env fractal-llm wandb-secret WANDB_API_KEY="$WANDB_API_KEY"
 
 # Run nanochat d20 speedrun on 8×H100 (logs artifact to W&B; detached so laptop can sleep)
+# Uses vendored nanochat at third_party/nanochat (pinned commit above) so our wandb patches apply.
 MODAL_ENVIRONMENT=fractal-llm uv run modal run --detach src/nanochat_modal.py \
   --wandb-name nanochat-d20-modal \
   --save-artifact-name nanochat-d20-speedrun
 # WANDB_RUN is set from wandb-name to avoid 'dummy' runs; artifact packs model_out.tar.gz + tokenizer/* + report.md
+
+# Smoke test (fast, validates logging + artifact in a single run)
+# 3-layer tiny model, 10 steps, logs every step and uploads smoke-mini-artifact in the same W&B run.
+MODAL_ENVIRONMENT=fractal-llm uv run modal run src/nanochat_modal.py \
+  --wandb-name smoke-mini \
+  --save-artifact-name smoke-mini-artifact \
+  --smoke
 ```
 
 **Test Results (verified 2024-12-29):**
@@ -114,6 +123,10 @@ Ensure to always use performant code for running analysis, always use pandas bes
 
 ## Working with Weights & Biases - project and entity to use
 When logging to `wandb` or `weave` from Weights & Biases, always log to the `morgan` entity and the `fractal-llm` project, unless specifically asked to log elsewhere
+
+### WandB terminal UI (beta leet)
+- Inspect runs locally with the new TUI: `uv run wandb beta leet https://wandb.ai/morgan/fractal-llm/runs/<run_id>`
+- Useful for monitoring long Modal jobs without opening a browser.
 
 ## Working with Jupyter notebooks
 ### Reading / visualizing pandas dataframes
