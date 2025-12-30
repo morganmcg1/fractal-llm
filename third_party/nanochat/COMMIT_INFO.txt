@@ -1,0 +1,4 @@
+nanochat upstream commit: 8f979a8bdab491c4c152ce5c87f90c2ec31d0845
+commit date: 2025-12-28
+cloned into fractal-llm: 2025-12-30
+notes: training runs should use this checked-in copy.
