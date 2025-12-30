@@ -20,7 +20,7 @@ import simple_parsing as sp
 WANDB_ENTITY = "morgan"
 WANDB_PROJECT = "fractal-llm"
 NANOCHAT_REPO = "https://github.com/karpathy/nanochat.git"
-BRANCH = "nanochat"  # upstream default branch
+BRANCH = ""  # use upstream default branch
 
 
 # Modal image: CUDA 12.8 + Torch cu128 + git + uv (all installs via uv)
@@ -85,17 +85,15 @@ def train_d20(args: Args):
     repo_dir = workdir / "nanochat"
 
     # Clone repo (default branch if not found)
-    clone_cmd = ["git", "clone", "--depth", "1", NANOCHAT_REPO, str(repo_dir)]
-    if args.repo_branch:
-        clone_cmd = ["git", "clone", "--depth", "1", "--branch", args.repo_branch, NANOCHAT_REPO, str(repo_dir)]
+    clone_cmd = ["git", "clone", "--depth", "1", NANOCHAT_REPO, str(repo_dir)] if not args.repo_branch else \
+                ["git", "clone", "--depth", "1", "--branch", args.repo_branch, NANOCHAT_REPO, str(repo_dir)]
     try:
         subprocess.run(clone_cmd, check=True)
     except subprocess.CalledProcessError:
-        # Retry without branch in case branch name differs
         subprocess.run(["git", "clone", "--depth", "1", NANOCHAT_REPO, str(repo_dir)], check=True)
 
-    # Install dependencies via uv (respect upstream lock)
-    subprocess.run(["uv", "pip", "install", "-r", "uv.lock"], cwd=repo_dir, check=True)
+    # Install dependencies via uv (editable install)
+    subprocess.run(["uv", "pip", "install", "--system", "-e", "."], cwd=repo_dir, check=True)
 
     # Run speedrun (d20) with W&B env set
     console.print(Panel("Starting speedrun.sh (d20, 8×H100)", title="Train"))
