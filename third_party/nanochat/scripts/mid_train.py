@@ -312,6 +312,16 @@ if master_process and not use_dummy_wandb and not dry_run:
     art = wandb.Artifact(artifact_name, type="model")
     if os.path.isdir(checkpoint_dir):
         art.add_dir(checkpoint_dir, name="checkpoints")
+    report_path = os.path.join(os.getcwd(), "report.md")
+    if os.path.exists(report_path):
+        art.add_file(report_path, name="report.md")
+        try:
+            import markdown as md
+            report_html = md.markdown(open(report_path, "r", encoding="utf-8").read())
+        except Exception:
+            import html as ihtml
+            report_html = "<pre>" + ihtml.escape(open(report_path, "r", encoding="utf-8").read()) + "</pre>"
+        wandb_run.log({"report_md": wandb.Html(report_html)})
     wandb_run.log_artifact(art, aliases=["mid", run, "latest"])
 
 # Log to report

@@ -287,6 +287,21 @@ if master_process:
         art = wandb.Artifact(artifact_name, type="model")
         if os.path.isdir(checkpoint_dir):
             art.add_dir(checkpoint_dir, name="checkpoints")
+        # Generate combined report and attach
+        try:
+            from nanochat.report import get_report
+            report_path = get_report().generate()
+        except Exception:
+            report_path = "report.md" if os.path.exists("report.md") else None
+        if report_path and os.path.exists(report_path):
+            art.add_file(report_path, name="report.md")
+            try:
+                import markdown as md
+                report_html = md.markdown(open(report_path, "r", encoding="utf-8").read())
+            except Exception:
+                import html as ihtml
+                report_html = "<pre>" + ihtml.escape(open(report_path, "r", encoding="utf-8").read()) + "</pre>"
+            wandb_run.log({"report_md": wandb.Html(report_html)})
         wandb_run.log_artifact(art, aliases=["sft", run, "latest"])
 
 # Log to report
