@@ -16,8 +16,8 @@ Run hyperparameter grid searches over LR × dataset size (and other axes) during
 - **Profile**: `weightsandbiases`
 - **GPU**: H100 (single or up to 8× per node)
 - **Volume**: `fractal-llm-results` for persistent storage
-- **Image**: `nvidia/cuda:12.4.0-devel-ubuntu22.04` with flash-attn compiled
-- **Model**: GPT-2 124M (for testing), can swap to larger models
+- **Image**: `nvidia/cuda:12.8.0-devel-ubuntu22.04` (Torch 2.8.0+cu128 via uv pip; rich + python-dotenv included)
+- **Model**: nanochat-d20 (561M) from W&B artifact `morgan/fractal-llm/nanochat-d20-speedrun:latest`
 
 **Commands:**
 ```bash
@@ -38,6 +38,17 @@ uv run data/prepare_smoltalk.py --budgets 1000 10000 100000 1000000 --out-dir /r
 
 # OOD eval snapshot (HellaSwag + ARC)
 uv run eval/run_lmeval.py --model nanochat-students/nanochat-d20 --tasks hellaswag,arc_challenge --max-samples 500
+
+# Create Modal env + token + secret (one time)
+uv run modal environment create fractal-llm
+uv run modal token set --token-id $MODAL_TOKEN_ID --token-secret $MODAL_TOKEN_SECRET --profile=weightsandbiases
+uv run modal secret create --env fractal-llm wandb-secret WANDB_API_KEY="$WANDB_API_KEY"
+
+# Run nanochat d20 speedrun on 8×H100 (logs artifact to W&B)
+MODAL_ENVIRONMENT=fractal-llm uv run modal run src/nanochat_modal.py \
+  --wandb-name nanochat-d20-modal \
+  --save-artifact-name nanochat-d20-speedrun
+# (Runs remotely; safe to close laptop after launch)
 ```
 
 **Test Results (verified 2024-12-29):**

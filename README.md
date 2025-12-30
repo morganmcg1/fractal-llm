@@ -19,7 +19,17 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
 5) **OOD eval (HellaSwag + ARC)**  
 `uv run eval/run_lmeval.py --model nanochat-students/nanochat-d20 --tasks hellaswag,arc_challenge --max-samples 500`
 
+## Modal setup (8×H100 nanochat training)
+1) Create env (once): `uv run modal environment create fractal-llm`
+2) Set token (once):  
+   `uv run modal token set --token-id <token> --token-secret <secret> --profile=weightsandbiases`  
+   (token currently in `.env` as `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`)
+3) Create W&B secret in env (once):  
+   `uv run modal secret create --env fractal-llm wandb-secret WANDB_API_KEY="$WANDB_API_KEY"` (load from `.env`)
+4) Train nanochat d20 on 8×H100 and log artifact to W&B (runs remotely; safe to close laptop after launch):  
+   `MODAL_ENVIRONMENT=fractal-llm uv run modal run src/nanochat_modal.py --wandb-name nanochat-d20-modal --save-artifact-name nanochat-d20-speedrun`
+
 ## Notes
-- Modal profile is set to `weightsandbiases`; W&B logs to `morgan/fractal-llm`.
-- Image uses CUDA 12.4 with Torch 2.5.1 CU124 wheels and flash-attn.
+- W&B: entity `morgan`, project `fractal-llm`. Fractal sweeps load the model from W&B artifact `nanochat-d20-speedrun:latest`.
+- Modal training image: CUDA 12.8, torch 2.8.0+cu128, installs via `uv pip`; `python-dotenv` and `rich` included; flash-attn omitted.
 - Token budget per grid point is respected (`steps = ceil(tokens / (bs*seq_len))`).
