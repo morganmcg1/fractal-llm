@@ -143,30 +143,8 @@ def train_d20(args: Args):
             target.write_bytes(p.read_bytes())
         outputs["tokenizer_dir"] = str(tokenizer_dir)
 
-    # Upload to W&B as artifact (skip here in smoke; handled in speedrun.sh to keep single run)
-    if not args.smoke:
-        run = wandb.init(
-            entity=WANDB_ENTITY,
-            project=WANDB_PROJECT,
-            name=args.wandb_name,
-            tags=["nanochat", "d20", "modal", "8xH100"],
-            config={"repo": NANOCHAT_REPO, "branch": args.repo_branch, "gpus": 8, "model": "d20"},
-            reinit=True,
-        )
-
-        artifact = wandb.Artifact(args.save_artifact_name, type="model")
-        for label, path in outputs.items():
-            if label == "tokenizer_dir":
-                artifact.add_dir(path, name="tokenizer")
-            else:
-                artifact.add_file(path, name=Path(path).name if label == "out_tar" else label)
-        run.log_artifact(artifact)
-
-        # Save summary
-        if report.exists():
-            with open(report, "r", encoding="utf-8") as f:
-                run.summary["report_md_head"] = f.read()[:2000]
-        run.finish()
+    # W&B artifacts are now logged per-stage inside the training scripts with stage-specific run names.
+    # No extra wrapper run here to avoid duplicate non-stage runs.
 
     # Persist artifacts to volume
     results_dir = Path("/results/nanochat")
