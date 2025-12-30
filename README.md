@@ -23,6 +23,21 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    - Use a specific W&B artifact as the model source:  
      `torchrun --standalone --nproc_per_node=1 -m src.finetune_modal_app --model_id="wandb:morgan/fractal-llm/nanochat-d20-20251230-r3-sft-artifact:v0" --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0`
 
+### CoreWeave DevPod storage quota workaround (torch install)
+If torch wheels blow your workspace quota, put the venv on `/var/tmp` and keep the torch install to one copy:
+```bash
+# from third_party/nanochat
+rm -rf .venv /workspaces/.uv-cache
+python3.10 -m venv /var/tmp/nanochat-venv
+ln -sfn /var/tmp/nanochat-venv .venv
+source .venv/bin/activate
+python -m ensurepip --upgrade || true
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu126 \
+  torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0
+UV_CACHE_DIR=/workspaces/.uv-cache UV_LINK_MODE=symlink uv sync --extra gpu
+```
+
 ## Modal setup (8×H100 nanochat training)
 1) Create env (once): `uv run modal environment create fractal-llm`
 2) Set token (once):  
