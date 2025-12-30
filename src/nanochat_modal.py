@@ -20,7 +20,7 @@ import simple_parsing as sp
 WANDB_ENTITY = "morgan"
 WANDB_PROJECT = "fractal-llm"
 NANOCHAT_REPO = "https://github.com/karpathy/nanochat.git"
-BRANCH = "main"
+BRANCH = "nanochat"  # upstream default branch
 
 
 # Modal image: CUDA 12.8 + Torch cu128 + git + uv (all installs via uv)
@@ -84,11 +84,15 @@ def train_d20(args: Args):
     workdir = Path("/workspace")
     repo_dir = workdir / "nanochat"
 
-    # Clone repo
-    subprocess.run(
-        ["git", "clone", "--depth", "1", "--branch", args.repo_branch, NANOCHAT_REPO, str(repo_dir)],
-        check=True,
-    )
+    # Clone repo (default branch if not found)
+    clone_cmd = ["git", "clone", "--depth", "1", NANOCHAT_REPO, str(repo_dir)]
+    if args.repo_branch:
+        clone_cmd = ["git", "clone", "--depth", "1", "--branch", args.repo_branch, NANOCHAT_REPO, str(repo_dir)]
+    try:
+        subprocess.run(clone_cmd, check=True)
+    except subprocess.CalledProcessError:
+        # Retry without branch in case branch name differs
+        subprocess.run(["git", "clone", "--depth", "1", NANOCHAT_REPO, str(repo_dir)], check=True)
 
     # Install dependencies via uv (respect upstream lock)
     subprocess.run(["uv", "pip", "install", "-r", "uv.lock"], cwd=repo_dir, check=True)
