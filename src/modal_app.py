@@ -17,30 +17,30 @@ volume = modal.Volume.from_name("fractal-llm-results", create_if_missing=True)
 WANDB_ENTITY = "morgan"
 WANDB_PROJECT = "fractal-llm"
 
-# H100-optimized image with CUDA support (Torch CU124 wheels)
+# H100-optimized image with CUDA support (Torch CU124 wheels), installs via uv pip
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.0-devel-ubuntu22.04", add_python="3.12")
     .run_commands(
-        "pip install --index-url https://download.pytorch.org/whl/cu124 torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1"
+        "pip install uv>=0.4.0 "
+        "&& uv pip install --system --index-url https://download.pytorch.org/whl/cu124 "
+        "torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 "
+        "&& uv pip install --system "
+        "transformers>=4.47.0 "
+        "datasets>=3.2.0 "
+        "accelerate>=1.2.0 "
+        "wandb>=0.23.1 "
+        "numpy>=2.0.0 "
+        "pandas>=2.2.0 "
+        "matplotlib>=3.9.0 "
+        "seaborn>=0.13.0 "
+        "scipy>=1.14.0 "
+        "tqdm>=4.67.0 "
+        "rich>=14.0.0 "
+        "huggingface-hub>=0.27.0 "
+        "lm-eval==0.4.2 "
+        "packaging "
+        "ninja"
     )
-    .pip_install(
-        "transformers>=4.47.0",
-        "datasets>=3.2.0",
-        "accelerate>=1.2.0",
-        "wandb>=0.23.1",
-        "numpy>=2.0.0",
-        "pandas>=2.2.0",
-        "matplotlib>=3.9.0",
-        "seaborn>=0.13.0",
-        "scipy>=1.14.0",
-        "tqdm>=4.67.0",
-        "rich>=14.0.0",
-        "huggingface-hub>=0.27.0",
-        "lm-eval==0.4.2",
-        "packaging",
-        "ninja",
-    )
-    .run_commands("pip install flash-attn --no-build-isolation")
 )
 
 # Primary model for experiments (matches research plan)
