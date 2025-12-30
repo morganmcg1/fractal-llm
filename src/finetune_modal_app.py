@@ -28,6 +28,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, List, Tuple
+import shutil
 
 import matplotlib
 matplotlib.use("Agg")
@@ -62,6 +63,7 @@ if NANOCHAT_DIR.exists() and str(NANOCHAT_DIR) not in sys.path:
 # nanochat imports (after sys.path wiring)
 from nanochat.checkpoint_manager import build_model, find_last_step
 from nanochat.tokenizer import get_tokenizer
+from nanochat.common import get_base_dir
 
 try:
     from nanochat.common import (
@@ -120,6 +122,7 @@ log_every = 20
 seed = 42
 gradient_checkpointing = False
 source_stage = "sft"  # nanochat checkpoint family: base|mid|sft|rl
+tokenizer_artifact = os.environ.get("TOKENIZER_ARTIFACT", None)
 
 # Grid search knobs
 grid = False
@@ -226,6 +229,62 @@ def build_dataloader(tokenizer, seed, world_size, rank) -> DataLoader:
 # ---------------------------------------------------------------------------
 # Model helpers
 
+def ensure_tokenizer(tokenizer_id: str | None, artifact_root: Path | None) -> Path:
+    """
+    Ensure nanochat tokenizer files are available under ~/.cache/nanochat/tokenizer.
+    Strategy:
+      1) If tokenizer already exists there, use it.
+      2) Else, if artifact_root contains tokenizer files, copy them in.
+      3) Else, if tokenizer_id is provided (wandb:...), download and copy.
+      4) Else, raise.
+    """
+    base_dir = Path(get_base_dir())
+    tok_dir = base_dir / "tokenizer"
+    tok_dir.mkdir(parents=True, exist_ok=True)
+    required = ["tokenizer.pkl", "tokenizer.json", "vocab.json", "merges.txt", "token_bytes.pt", "tokenizer_config.json"]
+
+    def has_required(path: Path) -> bool:
+        return all((path / r).exists() for r in ["tokenizer.pkl"])
+
+    if has_required(tok_dir):
+        return tok_dir
+
+    def copy_from(src_dir: Path):
+        for r in required:
+            for cand in src_dir.rglob(r):
+                target = tok_dir / cand.name
+                target.write_bytes(cand.read_bytes())
+
+    if artifact_root:
+        # Look for tokenizer assets inside the already-downloaded model artifact
+        for sub in [artifact_root, artifact_root / "tokenizer"]:
+            if sub.exists():
+                copy_from(sub)
+        if has_required(tok_dir):
+            return tok_dir
+
+    if tokenizer_id:
+        import wandb as _wandb
+
+        art_path = tokenizer_id[len("wandb:") :] if tokenizer_id.startswith("wandb:") else tokenizer_id
+        api = _wandb.Api()
+        art = api.artifact(art_path, type="model")
+        dl_root = tok_dir / "tmp_download"
+        if dl_root.exists():
+            shutil.rmtree(dl_root)
+        dl_root.mkdir(parents=True, exist_ok=True)
+        art_local = Path(art.download(root=str(dl_root)))
+        copy_from(art_local)
+        shutil.rmtree(dl_root, ignore_errors=True)
+        if has_required(tok_dir):
+            return tok_dir
+
+    raise FileNotFoundError(
+        "Tokenizer not found. Provide TOKENIZER_ARTIFACT (wandb:<entity>/<project>/<name>:<ver>) "
+        "or place tokenizer files under ~/.cache/nanochat/tokenizer."
+    )
+
+
 def resolve_checkpoint_dir(model_ref: str) -> Path:
     """
     Download W&B artifact if needed, otherwise treat as local path.
@@ -249,6 +308,7 @@ def resolve_checkpoint_dir(model_ref: str) -> Path:
 
 def load_model_and_tok(device_type: str):
     ckpt_dir = resolve_checkpoint_dir(model_id)
+    tok_dir = ensure_tokenizer(tokenizer_artifact, ckpt_dir.parent if ckpt_dir.name == "checkpoints" else ckpt_dir)
     step = find_last_step(ckpt_dir)
     model, tokenizer, meta = build_model(ckpt_dir, step=step, device=torch.device(device_type), phase="train")
     model.to(device_type)
