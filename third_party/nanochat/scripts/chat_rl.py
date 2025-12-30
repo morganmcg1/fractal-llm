@@ -341,6 +341,9 @@ for step in range(num_steps):
             art = wandb.Artifact(artifact_name, type="model")
             if os.path.isdir(checkpoint_dir):
                 art.add_dir(checkpoint_dir, name="checkpoints")
+            tokenizer_dir = get_base_dir() + "/tokenizer"
+            if os.path.isdir(tokenizer_dir):
+                art.add_dir(tokenizer_dir, name="tokenizer")
             try:
                 from nanochat.report import get_report
                 report_path = get_report().generate()
