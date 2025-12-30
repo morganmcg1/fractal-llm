@@ -29,6 +29,7 @@ image = (
         "datasets>=3.2.0 "
         "accelerate>=1.2.0 "
         "wandb>=0.23.1 "
+        "python-dotenv>=1.0.1 "
         "numpy>=2.0.0 "
         "pandas>=2.2.0 "
         "matplotlib>=3.9.0 "
@@ -81,6 +82,7 @@ def train_single_run(
         Dict with final_loss, converged, loss_trajectory
     """
     import torch
+    from dotenv import load_dotenv
     from transformers import (
         AutoModelForCausalLM,
         AutoTokenizer,
@@ -99,6 +101,11 @@ def train_single_run(
     import time
 
     # Enforce full reproducibility (following Stas Bekman's ml-engineering guide)
+    # Load .env if present (optional; primary auth should come from Modal secrets)
+    for candidate in ("/workspace/.env", "/root/.env", ".env"):
+        if os.path.exists(candidate):
+            load_dotenv(candidate, override=False)
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

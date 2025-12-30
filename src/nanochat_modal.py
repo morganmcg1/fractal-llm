@@ -33,7 +33,7 @@ image = (
         "&& uv pip install --system packaging ninja "
         "&& uv pip install --system --index-url https://download.pytorch.org/whl/cu128 "
         "torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 "
-        "&& uv pip install --system wandb>=0.23.1 simple-parsing>=0.1.7 rich>=14.0.0"
+        "&& uv pip install --system wandb>=0.23.1 simple-parsing>=0.1.7 rich>=14.0.0 python-dotenv>=1.0.1"
     )
 )
 
@@ -72,9 +72,14 @@ def train_d20(args: Args):
     import wandb
     from rich.console import Console
     from rich.panel import Panel
+    from dotenv import load_dotenv
 
     console = Console()
     console.rule("[bold blue]nanochat d20 on Modal (8×H100)")
+
+    for candidate in ("/workspace/.env", "/root/.env", ".env"):
+        if os.path.exists(candidate):
+            load_dotenv(candidate, override=False)
 
     os.environ["WANDB_ENTITY"] = WANDB_ENTITY
     os.environ["WANDB_PROJECT"] = WANDB_PROJECT
