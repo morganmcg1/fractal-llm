@@ -23,15 +23,15 @@ NANOCHAT_REPO = "https://github.com/karpathy/nanochat.git"
 BRANCH = "main"
 
 
-# Modal image: CUDA 12.4 + Torch cu124 + git + uv (all installs via uv)
+# Modal image: CUDA 12.8 + Torch cu128 + git + uv (all installs via uv)
 image = (
-    modal.Image.from_registry("nvidia/cuda:12.4.0-devel-ubuntu22.04", add_python="3.12")
+    modal.Image.from_registry("nvidia/cuda:12.8.0-devel-ubuntu22.04", add_python="3.12")
     .apt_install("git", "curl")
     .run_commands(
         # Install uv, then use uv pip (system) for everything\n"
         "pip install uv>=0.4.0 "
         "&& uv pip install --system packaging ninja "
-        "&& uv pip install --system --index-url https://download.pytorch.org/whl/cu124 "
+        "&& uv pip install --system --index-url https://download.pytorch.org/whl/cu128 "
         "torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 "
         "&& uv pip install --system wandb>=0.23.1 simple-parsing>=0.1.7"
     )

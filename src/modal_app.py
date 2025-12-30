@@ -17,12 +17,12 @@ volume = modal.Volume.from_name("fractal-llm-results", create_if_missing=True)
 WANDB_ENTITY = "morgan"
 WANDB_PROJECT = "fractal-llm"
 
-# H100-optimized image with CUDA support (Torch CU124 wheels), installs via uv pip
+# H100-optimized image with CUDA support (Torch CU128 wheels), installs via uv pip
 image = (
-    modal.Image.from_registry("nvidia/cuda:12.4.0-devel-ubuntu22.04", add_python="3.12")
+    modal.Image.from_registry("nvidia/cuda:12.8.0-devel-ubuntu22.04", add_python="3.12")
     .run_commands(
         "pip install uv>=0.4.0 "
-        "&& uv pip install --system --index-url https://download.pytorch.org/whl/cu124 "
+        "&& uv pip install --system --index-url https://download.pytorch.org/whl/cu128 "
         "torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 "
         "&& uv pip install --system "
         "transformers>=4.47.0 "
