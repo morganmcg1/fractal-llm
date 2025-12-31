@@ -22,6 +22,8 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
      `torchrun --standalone --nproc_per_node=8 -m src.finetune_modal_app --grid=True --run=fractal-grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5`
    - Use a specific W&B artifact as the model source:  
      `torchrun --standalone --nproc_per_node=1 -m src.finetune_modal_app --model_id="wandb:morgan/fractal-llm/nanochat-d20-20251230-r3-sft-artifact:v0" --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0`
+   - Parallel single-GPU grid sweep (recommended for throughput + reproducibility):  
+     `RUN_PREFIX=grid-smoke GPUS=\"0 1 2 3 4 5 6 7\" RES=2 TOK_MIN=5e2 TOK_MAX=5e2 LR_MIN=3e-4 LR_MAX=3e-4 MODEL_ID=/workspaces/fractal-llm/results/model_cache/nanochat-d20-20251230-r3-sft-artifact_v0/checkpoints DATASET_ID=morgan/docvqa-nanochat ./scripts/grid_sweep.sh`
 
 ### CoreWeave DevPod storage quota workaround (torch install)
 If torch wheels blow your workspace quota, put the venv on `/var/tmp` and keep the torch install to one copy:
