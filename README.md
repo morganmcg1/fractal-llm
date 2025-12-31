@@ -132,3 +132,11 @@ kubectl get pods --all-namespaces --context cks-wb3 \
 - Modal training image: CUDA 12.8, torch 2.8.0+cu128, installs via `uv pip`; `python-dotenv` and `rich` included; flash-attn omitted.
 - Token budget per grid point is respected (`steps = ceil(tokens / (bs*seq_len))`).
 - WandB terminal UI (beta leet): inspect any run locally via `uv run wandb beta leet https://wandb.ai/morgan/fractal-llm/runs/<run_id>` (handy for Modal jobs).
+
+## Reproducibility
+- Deterministic CUDA everywhere: `CUBLAS_WORKSPACE_CONFIG=:4096:8`, TF32 off, `torch.use_deterministic_algorithms(True)`, `torch.backends.cudnn.deterministic=True`, `torch.backends.cudnn.benchmark=False`, `TORCH_NUM_THREADS=1`, `CUDA_DEVICE_ORDER=PCI_BUS_ID`, and NCCL fixed (`NCCL_ALGO=Ring`, `NCCL_PROTO=Simple`, `NCCL_MIN_NRINGS=1`).
+- Seeds: base `seed` applies to model init for all ranks; each grid point gets `run_seed = seed + grid_i*1000 + grid_j`, reused for data shuffle and logging. Results JSON/W&B config now record `run_seed` plus reproducibility metadata (git commit, torch/cuda/nccl versions, env flags).
+- Data determinism: DocVQA streaming loader accepts optional `DATASET_REVISION` and reuses the same shuffle buffer/seed per run; set `HF_DATASETS_OFFLINE=1` after caching to avoid remote variance.
+- GPU scaling: For fractal grids, prefer 8 independent single-GPU jobs (one per H200) for maximum throughput and bitwise repeatability. DDP paths keep identical initial weights across ranks; NCCL topology is pinned to ring for stable reductions.
+- Test harness: `./scripts/repro_check.sh` launches 8 single-GPU smoke trainings and asserts identical final losses across GPUs. Example:  
+  `RUN_PREFIX=repro-smoke TOKENS=2000 HF_DATASETS_OFFLINE=0 ./scripts/repro_check.sh`

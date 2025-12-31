@@ -2,18 +2,37 @@
 Finetune nanochat-style on a single 8×GPU node (no Modal) and optionally sweep LR×token grids.
 
 Usage:
-  # single run on 8 GPUs
+  # single run on 8 GPUs (DDP, data parallel)
   torchrun --standalone --nproc_per_node=8 -m src.finetune_modal_app -- --run myrun --learning_rate=3e-4 --num_tokens=200000
 
   # debug/smoke test (minimal data, fast iteration, saves artifacts)
   torchrun --standalone --nproc_per_node=1 -m src.finetune_modal_app -- --debug
 
-  # grid search (runs sequentially, all ranks participate in every point)
+  # grid search (runs sequentially, all 8 GPUs work on each point together)
   torchrun --standalone --nproc_per_node=8 -m src.finetune_modal_app -- --grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5
+
+  # PARALLEL grid search: run 8 independent single-GPU experiments (RECOMMENDED for fractal grids)
+  # This gives 8x throughput for grid search by running different (lr, tokens) combinations in parallel
+  for gpu in {0..7}; do
+    CUDA_VISIBLE_DEVICES=$gpu python -m src.finetune_modal_app --run grid-$gpu --learning_rate=<lr_$gpu> --num_tokens=<tokens_$gpu> &
+  done
+  wait
+
+Scaling Strategy for Fractal Grid Search:
+  - For maximum throughput: Run 8 independent single-GPU experiments in parallel
+  - Each GPU runs a different (learning_rate, num_tokens) combination
+  - Use a launcher script to distribute grid points across GPUs
+  - This is 8x faster than sequential grid search with DDP
+
+Reproducibility:
+  - deterministic=True (default) enables full reproducibility
+  - Same seed + same GPU = identical results
+  - CUBLAS_WORKSPACE_CONFIG and torch.use_deterministic_algorithms are set
+  - Grid points get unique seeds: seed + grid_i * 1000 + grid_j
 
 Style notes:
 - Mirrors nanochat/scripts/chat_sft.py: flat config globals + configurator overrides, compute_init/cleanup, DummyWandb, print0.
-- Keeps DocVQA chat formatting from the previous Modal finetune script.
+- Uses DocVQA dataset with proper conversation masking (assistant tokens only).
 - Runs entirely locally; no Modal objects or volumes.
 """
 
@@ -24,14 +43,15 @@ import math
 import os
 import random
 import sys
-import itertools
+import subprocess
 from dotenv import load_dotenv
 from contextlib import nullcontext
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, List, Tuple
+from typing import List
 import shutil
+import itertools
 
 import matplotlib
 matplotlib.use("Agg")
@@ -45,6 +65,92 @@ import numpy as np
 import wandb
 from torch.utils.data import IterableDataset, DataLoader
 from datasets import load_dataset
+
+# ---------------------------------------------------------------------------
+# Reproducibility settings (critical for fractal grid experiments)
+# Must be set before any CUDA operations
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Deterministic cuBLAS
+os.environ["PYTHONHASHSEED"] = "0"  # Deterministic Python hashing
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+os.environ.setdefault("NCCL_ALGO", "Ring")  # Stable reduction order (deterministic for single-node)
+os.environ.setdefault("NCCL_PROTO", "Simple")
+os.environ.setdefault("NCCL_MIN_NRINGS", "1")
+os.environ.setdefault("NCCL_DEBUG", os.environ.get("NCCL_DEBUG", "WARN"))
+os.environ.setdefault("HF_DATASETS_OFFLINE", os.environ.get("HF_DATASETS_OFFLINE", "0"))
+
+
+def set_seed(seed: int, rank: int = 0):
+    """Set all random seeds for full reproducibility.
+
+    Model initialization uses the base seed for all ranks so weights match
+    exactly; rank offset is applied only to RNG streams that affect data order.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # For multi-GPU
+
+    # Optional per-rank jitter for data-only randomness can be layered on top
+    # by callers if needed without changing model initialization.
+
+
+def enable_deterministic_mode():
+    """Enable PyTorch deterministic algorithms for reproducibility.
+
+    Note: This may have a small performance impact (~5-10%).
+    """
+    torch.use_deterministic_algorithms(True, warn_only=False)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False  # Disable auto-tuning for reproducibility
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", "1")))
+
+
+def repro_context():
+    """Collect reproducibility-relevant metadata for logging."""
+    def _git_rev():
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=REPO_ROOT,
+            )
+            return result.stdout.strip()
+        except Exception:
+            return None
+
+    ctx = {
+        "seed": seed,
+        "deterministic": deterministic,
+        "model_id": model_id,
+        "dataset_id": dataset_id,
+        "dataset_revision": dataset_revision,
+        "tokenizer_artifact": tokenizer_artifact,
+        "torch": torch.__version__,
+        "cuda": torch.version.cuda,
+        "cudnn": torch.backends.cudnn.version(),
+        "nccl": ".".join(map(str, torch.cuda.nccl.version())) if torch.cuda.is_available() else None,
+        "cublas_workspace": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+        "nccl_algo": os.environ.get("NCCL_ALGO"),
+        "nccl_proto": os.environ.get("NCCL_PROTO"),
+        "nccl_min_nrings": os.environ.get("NCCL_MIN_NRINGS"),
+        "hf_datasets_offline": os.environ.get("HF_DATASETS_OFFLINE"),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "tf32": {
+            "matmul": torch.backends.cuda.matmul.allow_tf32,
+            "cudnn": torch.backends.cudnn.allow_tf32,
+        },
+        "torch_num_threads": torch.get_num_threads(),
+        "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
+        "git_commit": _git_rev(),
+    }
+    return ctx
 
 # ---------------------------------------------------------------------------
 # Wire nanochat helpers (style compatibility)
@@ -110,7 +216,8 @@ except Exception:
 run = "dummy"  # wandb run name; "dummy" disables logging
 model_id = os.environ.get("MODEL_ARTIFACT", "wandb:morgan/fractal-llm/nanochat-d20-speedrun:latest")
 dataset_id = os.environ.get("DATASET_ID", "morgan/docvqa-nanochat")
-max_seq_len = int(os.environ.get("MAX_SEQ_LEN", "128"))
+dataset_revision = os.environ.get("DATASET_REVISION", None)
+max_seq_len = int(os.environ.get("MAX_SEQ_LEN", "1024"))  # nanochat default=2048, DocVQA avg ~400 tokens
 dtype = "bfloat16"  # float32 | bfloat16
 device_batch_size = 2
 target_examples_per_step = 32  # like chat_sft
@@ -124,6 +231,7 @@ num_iterations = -1  # derived from num_tokens if -1
 eval_every = 200
 log_every = 20
 seed = 42
+deterministic = True  # if True, enable full reproducibility (slight perf hit ~5-10%)
 debug = False  # if True, run a quick smoke test with minimal data
 save_artifacts = False  # if True, save checkpoint and upload to W&B (auto-enabled in debug mode)
 gradient_checkpointing = False
@@ -189,19 +297,6 @@ WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "morgan")
 # ---------------------------------------------------------------------------
 # Data utilities
 
-def format_docvqa(sample: dict) -> str:
-    """Convert DocVQA style messages to a single chat text block."""
-    msgs = sample.get("messages", [])
-    if not msgs:
-        return ""
-    parts = []
-    for msg in msgs:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        parts.append(f"<|{role}|>\n{content}")
-    parts.append("<|end|>")
-    return "\n".join(parts)
-
 
 class DocVQADataset(IterableDataset):
     """Streaming iterable dataset sharded across ranks."""
@@ -214,31 +309,89 @@ class DocVQADataset(IterableDataset):
         self.rank = rank
 
     def __iter__(self):
-        ds = load_dataset(dataset_id, split=self.split, streaming=True)
+        load_kwargs = {"split": self.split, "streaming": True}
+        if dataset_revision:
+            load_kwargs["revision"] = dataset_revision
+        ds = load_dataset(dataset_id, **load_kwargs)
         ds = ds.shuffle(seed=self.seed, buffer_size=2048)
         if self.world_size > 1:
             ds = ds.shard(num_shards=self.world_size, index=self.rank)
         for sample in ds:
-            text = format_docvqa(sample)
-            if not text:
+            # Pass messages directly - dataset already has proper {user, assistant} structure
+            messages = sample.get("messages", [])
+            if not messages:
                 continue
-            # nanochat tokenizer expects conversation structure; wrap into messages
-            conversation = {"messages": [{"role": "user", "content": text}]}
+            conversation = {"messages": messages}
             ids, mask = self.tokenizer.render_conversation(conversation)
-            # Clamp / truncate to max_seq_len
+            # Truncate to max_seq_len (keeping room for shift)
+            orig_len = len(ids)
             ids = ids[:max_seq_len]
             mask = mask[:max_seq_len]
-            input_ids = torch.tensor(ids, dtype=torch.long)
-            attn = torch.tensor([1 if m >= 0 else 0 for m in mask], dtype=torch.long)
-            labels = input_ids.clone()
-            # mask==0 -> positions we don't train on
-            labels = torch.where(torch.tensor(mask) == 1, labels, torch.tensor(-100))
+            if orig_len > max_seq_len and self.rank == 0:
+                # Log truncation warning once per sample on rank 0
+                print0(f"[WARN] Truncated sample from {orig_len} to {max_seq_len} tokens")
+            if len(ids) < 2:
+                continue  # Need at least 2 tokens for next-token prediction
+
+            # Shift for next-token prediction: input predicts next token
+            # input_ids[i] should predict ids[i+1], so:
+            #   input_ids = ids[:-1] (all but last)
+            #   labels = ids[1:] (all but first, shifted by 1)
+            input_ids = torch.tensor(ids[:-1], dtype=torch.long)
+            labels = torch.tensor(ids[1:], dtype=torch.long)
+            # Shift mask to align with labels (mask[i] corresponds to ids[i])
+            mask_shifted = mask[1:]
+            if sum(mask_shifted) == 0:
+                # No assistant tokens to train on; skip to avoid NaN loss
+                continue
+            # Apply mask: positions where mask==0 should not contribute to loss
+            # Use -1 as ignore_index (matches gpt.py F.cross_entropy ignore_index=-1)
+            labels = torch.where(
+                torch.tensor(mask_shifted, dtype=torch.long) == 1,
+                labels,
+                torch.tensor(-1, dtype=torch.long),
+            )
+            # Attention mask: all 1s for causal attention (no padding in individual samples)
+            attn = torch.ones_like(input_ids)
             yield input_ids, attn, labels
+
+
+def collate_sft(batch, pad_token_id: int):
+    """Collate variable-length sequences with dynamic padding to longest in batch."""
+    input_ids_list, attn_list, labels_list = zip(*batch)
+    max_len = max(len(ids) for ids in input_ids_list)
+
+    padded_input_ids = []
+    padded_attn = []
+    padded_labels = []
+
+    for ids, attn, labels in zip(input_ids_list, attn_list, labels_list):
+        pad_len = max_len - len(ids)
+        if pad_len > 0:
+            padded_input_ids.append(torch.cat([ids, torch.full((pad_len,), pad_token_id, dtype=ids.dtype)]))
+            padded_attn.append(torch.cat([attn, torch.zeros(pad_len, dtype=attn.dtype)]))
+            padded_labels.append(torch.cat([labels, torch.full((pad_len,), -1, dtype=labels.dtype)]))
+        else:
+            padded_input_ids.append(ids)
+            padded_attn.append(attn)
+            padded_labels.append(labels)
+
+    return (
+        torch.stack(padded_input_ids),
+        torch.stack(padded_attn),
+        torch.stack(padded_labels),
+    )
 
 
 def build_dataloader(tokenizer, seed, world_size, rank) -> DataLoader:
     dataset = DocVQADataset(tokenizer, split="train", seed=seed, world_size=world_size, rank=rank)
-    return DataLoader(dataset, batch_size=device_batch_size, pin_memory=True)
+    # Use assistant_end as pad token (same as nanochat's chat_sft.py)
+    pad_token_id = tokenizer.encode_special("<|assistant_end|>")
+
+    def collate_fn(batch):
+        return collate_sft(batch, pad_token_id)
+
+    return DataLoader(dataset, batch_size=device_batch_size, pin_memory=True, collate_fn=collate_fn)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +499,9 @@ class RunResult:
     converged: bool
     steps: int
     runtime_s: float
+    run_seed: int
+    world_size: int
+    device_type: str
     error: str | None = None
     grid_i: int | None = None
     grid_j: int | None = None
@@ -518,10 +674,21 @@ def train_once(
         ddp, rank, local_rank, world_size, device, device_type = runtime
     master = rank == 0
 
-    # Seeds
-    torch.manual_seed(seed + (grid_i or 0) + (grid_j or 0))
-    np.random.seed(seed + (grid_i or 0) + (grid_j or 0))
-    random.seed(seed + (grid_i or 0) + (grid_j or 0))
+    # Reproducibility: set all seeds and enable deterministic mode
+    # Grid points get unique seeds based on position for independent runs
+    run_seed = seed + (grid_i or 0) * 1000 + (grid_j or 0)
+    set_seed(run_seed, rank=rank)
+    if deterministic:
+        enable_deterministic_mode()
+    run_repro = repro_context() | {
+        "run_seed": run_seed,
+        "rank": rank,
+        "local_rank": local_rank,
+        "world_size": world_size,
+        "device": str(device),
+    }
+    if master:
+        print0(f"[REPRO] {json.dumps(run_repro, indent=2)}")
 
     # wandb
     use_dummy = run == "dummy" or not master
@@ -535,7 +702,15 @@ def train_once(
             project=WANDB_PROJECT,
             entity=WANDB_ENTITY,
             name=run_name,
-            config=user_config | {"learning_rate": lr, "num_tokens": tokens_goal, "grid_i": grid_i, "grid_j": grid_j},
+            config=user_config
+            | {
+                "learning_rate": lr,
+                "num_tokens": tokens_goal,
+                "grid_i": grid_i,
+                "grid_j": grid_j,
+                "run_seed": run_seed,
+                "repro": run_repro,
+            },
             save_code=True,
             settings=wandb.Settings(init_timeout=300, _service_wait=300),
         )
@@ -546,14 +721,13 @@ def train_once(
     if ddp:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
 
-    dataloader = build_dataloader(tokenizer, seed=seed, world_size=world_size, rank=rank)
+    dataloader = build_dataloader(tokenizer, seed=run_seed, world_size=world_size, rank=rank)
     data_iter = iter(dataloader)
 
     # Peek first batch to estimate tokens/batch (then reuse it)
     first_batch = next(data_iter)
-    input_ids, attn, labels = [x.to(device) for x in first_batch]
-    tokens_per_batch = int(attn.sum().item())
-    import itertools
+    _, attn_peek, _ = [x.to(device) for x in first_batch]
+    tokens_per_batch = int(attn_peek.sum().item())
     data_iter = itertools.chain([first_batch], data_iter)
 
     examples_per_step = device_batch_size * world_size
@@ -601,8 +775,13 @@ def train_once(
                 batch = [b.to(device) for b in batch]
                 b_input, b_attn, b_labels = batch
                 with cast_ctx():
-                    outputs = model(input_ids=b_input, attention_mask=b_attn, labels=b_labels)
-                    loss = outputs.loss
+                    try:
+                        outputs = model(input_ids=b_input, attention_mask=b_attn, labels=b_labels)
+                        loss = outputs.loss
+                    except TypeError:
+                        # nanochat GPT expects positional args (idx, targets)
+                        out = model(idx=b_input, targets=b_labels)
+                        loss = out["loss"] if isinstance(out, dict) else out
                 (loss / grad_accum).backward()
                 running_loss += loss.detach()
                 num_tokens_step += int((b_labels >= 0).sum().item())
@@ -707,6 +886,9 @@ def train_once(
         converged=converged,
         steps=total_steps,
         runtime_s=runtime_s,
+        run_seed=run_seed,
+        world_size=world_size,
+        device_type=device_type,
         error=error,
         grid_i=grid_i,
         grid_j=grid_j,
@@ -771,6 +953,7 @@ def run_grid_search():
             "model_id": model_id,
             "dataset_id": dataset_id,
             "max_seq_len": max_seq_len,
+            "repro": repro_context(),
         }
 
         with open(results_path, "w", encoding="utf-8") as f:
@@ -864,8 +1047,13 @@ def main():
             results_dir = REPO_ROOT / "results"
             results_dir.mkdir(exist_ok=True, parents=True)
             results_path = results_dir / f"finetune_single_{run}_{timestamp}.json"
+            repro = repro_context() | {
+                "run_seed": res.run_seed,
+                "world_size": res.world_size,
+                "device_type": res.device_type,
+            }
             with open(results_path, "w", encoding="utf-8") as f:
-                json.dump({"config": user_config, "result": asdict(res)}, f, indent=2)
+                json.dump({"config": user_config, "result": asdict(res), "repro": repro}, f, indent=2)
             print0(f"Saved results: {results_path}")
     compute_cleanup()
 
