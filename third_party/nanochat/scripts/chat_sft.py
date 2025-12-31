@@ -288,10 +288,11 @@ if master_process:
         art = wandb.Artifact(artifact_name, type="model")
         if os.path.isdir(checkpoint_dir):
             art.add_dir(checkpoint_dir, name="checkpoints")
-        # also bundle tokenizer so downstream loads work out of the box
-        tokenizer_dir = get_base_dir() + "/tokenizer"
-        if os.path.isdir(tokenizer_dir):
-            art.add_dir(tokenizer_dir, name="tokenizer")
+        # also bundle tokenizer so downstream loads work out of the box (fail if missing)
+        tokenizer_dir = os.path.join(get_base_dir(), "tokenizer")
+        if not os.path.isdir(tokenizer_dir):
+            raise FileNotFoundError(f"Tokenizer directory missing at {tokenizer_dir}; refusing to log artifact without it.")
+        art.add_dir(tokenizer_dir, name="tokenizer")
         # Generate combined report and attach
         try:
             from nanochat.report import get_report
