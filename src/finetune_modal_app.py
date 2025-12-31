@@ -64,7 +64,7 @@ if NANOCHAT_DIR.exists() and str(NANOCHAT_DIR) not in sys.path:
     sys.path.insert(0, str(NANOCHAT_DIR))
 
 # nanochat imports (after sys.path wiring)
-from nanochat.checkpoint_manager import build_model, find_last_step
+from nanochat.checkpoint_manager import build_model, find_last_step, save_checkpoint
 from nanochat.tokenizer import get_tokenizer
 from nanochat.common import get_base_dir
 
@@ -125,6 +125,7 @@ eval_every = 200
 log_every = 20
 seed = 42
 debug = False  # if True, run a quick smoke test with minimal data
+save_artifacts = False  # if True, save checkpoint and upload to W&B (auto-enabled in debug mode)
 gradient_checkpointing = False
 source_stage = "sft"  # nanochat checkpoint family: base|mid|sft|rl
 tokenizer_artifact = os.environ.get("TOKENIZER_ARTIFACT", None)
@@ -176,9 +177,10 @@ if run != "dummy" and not run.endswith("-sft"):
 if debug:
     num_tokens = 2000
     log_every = 1
+    save_artifacts = True
     if run == "dummy":
         run = "debug-finetune"
-    print0(f"[DEBUG MODE] num_tokens={num_tokens}, log_every={log_every}")
+    print0(f"[DEBUG MODE] num_tokens={num_tokens}, log_every={log_every}, save_artifacts={save_artifacts}")
 
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "fractal-llm")
 WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "morgan")
@@ -641,6 +643,44 @@ def train_once(
     runtime_s = time.time() - start_time
     converged = error is None and math.isfinite(final_loss) and final_loss < 10.0
     avg_loss = float(np.mean(losses)) if losses else float("inf")
+
+    # Save checkpoint and upload artifact (single runs only, not grid)
+    if master and save_artifacts and not grid:
+        # Unwrap DDP if needed
+        raw_model = model.module if ddp else model
+
+        # Save checkpoint locally
+        checkpoint_dir = REPO_ROOT / "results" / "checkpoints" / run_name
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        model_config_kwargs = raw_model.config.__dict__ if hasattr(raw_model, "config") else {}
+        save_checkpoint(
+            str(checkpoint_dir),
+            total_steps,
+            raw_model.state_dict(),
+            None,  # don't save optimizer state
+            {
+                "step": total_steps,
+                "final_loss": final_loss,
+                "tokens_seen": tokens_seen,
+                "converged": converged,
+                "learning_rate": lr,
+                "model_config": model_config_kwargs,
+            },
+            rank=0,
+        )
+        print0(f"Saved checkpoint to {checkpoint_dir}")
+
+        # Upload to W&B as artifact
+        if not use_dummy:
+            artifact_name = f"{run_name}-artifact" if not run_name.endswith("-artifact") else run_name
+            art = wandb.Artifact(artifact_name, type="model")
+            art.add_dir(str(checkpoint_dir), name="checkpoints")
+            # Bundle tokenizer if available
+            tok_dir = Path(get_base_dir()) / "tokenizer"
+            if tok_dir.is_dir():
+                art.add_dir(str(tok_dir), name="tokenizer")
+            wb.log_artifact(art, aliases=["finetune", run_name, "latest"])
+            print0(f"Uploaded artifact: {artifact_name}")
 
     if master and not use_dummy:
         wb.log(
