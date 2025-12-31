@@ -5,6 +5,9 @@ Usage:
   # single run on 8 GPUs
   torchrun --standalone --nproc_per_node=8 -m src.finetune_modal_app -- --run myrun --learning_rate=3e-4 --num_tokens=200000
 
+  # debug/smoke test (minimal data, fast iteration, saves artifacts)
+  torchrun --standalone --nproc_per_node=1 -m src.finetune_modal_app -- --debug
+
   # grid search (runs sequentially, all ranks participate in every point)
   torchrun --standalone --nproc_per_node=8 -m src.finetune_modal_app -- --grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5
 
@@ -115,11 +118,13 @@ learning_rate = 3e-4
 weight_decay = 0.1
 init_lr_frac = 1.0
 warmup_frac = 0.06
+final_lr_frac = 0.0  # cosine anneals to lr * final_lr_frac (0.0 = full decay to zero)
 num_tokens = 200_000  # approximate global tokens to see
 num_iterations = -1  # derived from num_tokens if -1
 eval_every = 200
 log_every = 20
 seed = 42
+debug = False  # if True, run a quick smoke test with minimal data
 gradient_checkpointing = False
 source_stage = "sft"  # nanochat checkpoint family: base|mid|sft|rl
 tokenizer_artifact = os.environ.get("TOKENIZER_ARTIFACT", None)
@@ -166,6 +171,15 @@ if env_run:
     run = env_run
 if run != "dummy" and not run.endswith("-sft"):
     run = f"{run}-sft"
+
+# Debug mode: override to minimal settings for a quick smoke test
+if debug:
+    num_tokens = 2000
+    log_every = 1
+    eval_every = 0  # skip eval for speed
+    if run == "dummy":
+        run = "debug-sft"
+    print0(f"[DEBUG MODE] num_tokens={num_tokens}, log_every={log_every}, eval_every={eval_every}")
 
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "fractal-llm")
 WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "morgan")
@@ -549,9 +563,13 @@ def train_once(
     optim = torch.optim.AdamW(model.parameters(), lr=lr * init_lr_frac, weight_decay=weight_decay)
 
     def lr_mult(step_idx: int) -> float:
+        # linear warmup
         if step_idx < warmup_steps:
             return (step_idx + 1) / warmup_steps
-        return max(0.0, (total_steps - step_idx) / max(1, total_steps - warmup_steps))
+        # cosine decay from 1.0 to final_lr_frac
+        progress = (step_idx - warmup_steps) / max(1, total_steps - warmup_steps)
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return final_lr_frac + (1.0 - final_lr_frac) * cosine_decay
 
     # metrics
     losses: List[float] = []
@@ -801,6 +819,15 @@ def main():
         res = train_once(runtime=runtime)
         if int(os.environ.get("RANK", 0)) == 0:
             print0(f"\nFinal: loss={res.final_loss:.4f} tokens_seen={res.tokens_seen:,} converged={res.converged}")
+
+            # Save results JSON (single run artifact)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            results_dir = REPO_ROOT / "results"
+            results_dir.mkdir(exist_ok=True, parents=True)
+            results_path = results_dir / f"finetune_single_{run}_{timestamp}.json"
+            with open(results_path, "w", encoding="utf-8") as f:
+                json.dump({"config": user_config, "result": asdict(res)}, f, indent=2)
+            print0(f"Saved results: {results_path}")
     compute_cleanup()
 
 
