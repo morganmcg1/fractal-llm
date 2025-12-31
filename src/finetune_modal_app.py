@@ -176,10 +176,9 @@ if run != "dummy" and not run.endswith("-sft"):
 if debug:
     num_tokens = 2000
     log_every = 1
-    eval_every = 0  # skip eval for speed
     if run == "dummy":
-        run = "debug-sft"
-    print0(f"[DEBUG MODE] num_tokens={num_tokens}, log_every={log_every}, eval_every={eval_every}")
+        run = "debug-finetune"
+    print0(f"[DEBUG MODE] num_tokens={num_tokens}, log_every={log_every}")
 
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "fractal-llm")
 WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "morgan")
