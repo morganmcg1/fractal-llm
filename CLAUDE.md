@@ -5,6 +5,9 @@ This project explores the fractal nature of training dynamics in neural networks
 **Key References:**
 - Blog: https://sohl-dickstein.github.io/2024/02/12/fractal.html
 - Paper: https://arxiv.org/abs/2402.06184
+- colab: https://colab.research.google.com/github/Sohl-Dickstein/fractal/blob/main/the_boundary_of_neural_network_trainability_is_fractal.ipynb
+
+Our resarch question: will fractal boundaries still emerge with more realistic adaptive optimizers and fine-tuning?
 
 ## Project Goal
 
@@ -239,7 +242,7 @@ When running scripts, use the `debug` flags if available, and ask to run the ful
 Ensure to always use performant code for running analysis, always use pandas best practices for speed and efficiency.
 
 ## Working with Weights & Biases - project and entity to use
-When logging to `wandb` or `weave` from Weights & Biases, always log to the `morgan` entity and the `fractal-llm` project, unless specifically asked to log elsewhere
+When logging to `wandb` or `weave` from Weights & Biases, always log to the `morgy` entity and the `fractal-llm` project, unless specifically asked to log elsewhere
 
 ### WandB terminal UI (beta leet)
 - Inspect runs locally with the new TUI: `uv run wandb beta leet https://wandb.ai/morgan/fractal-llm/runs/<run_id>`

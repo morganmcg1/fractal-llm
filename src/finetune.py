@@ -65,6 +65,7 @@ import numpy as np
 import wandb
 from torch.utils.data import IterableDataset, DataLoader
 from datasets import load_dataset
+from torch.cuda.amp import GradScaler
 
 # ---------------------------------------------------------------------------
 # Reproducibility settings (critical for fractal grid experiments)
@@ -218,9 +219,10 @@ model_id = os.environ.get("MODEL_ARTIFACT", "wandb:morgan/fractal-llm/nanochat-d
 dataset_id = os.environ.get("DATASET_ID", "morgan/docvqa-nanochat")
 dataset_revision = os.environ.get("DATASET_REVISION", None)
 max_seq_len = int(os.environ.get("MAX_SEQ_LEN", "1024"))  # nanochat default=2048, DocVQA avg ~400 tokens
-dtype = "bfloat16"  # float32 | bfloat16
-device_batch_size = 2
-target_examples_per_step = 32  # like chat_sft
+dtype = "float32"  # float32 | bfloat16 | float16 (default float32 for numerical stability)
+device_batch_size = 8  # aim for the largest batch that fits; override via CLI/ENV if needed
+# Set 0 to force grad_accum=1; otherwise acts as a target effective batch size.
+target_examples_per_step = 0
 learning_rate = 3e-4
 weight_decay = 0.1
 init_lr_frac = 1.0
@@ -229,6 +231,7 @@ final_lr_frac = 0.0  # cosine anneals to lr * final_lr_frac (0.0 = full decay to
 num_tokens = 200_000  # approximate global tokens to see
 num_iterations = -1  # derived from num_tokens if -1
 eval_every = 200
+eval_batches = 4  # number of validation batches per eval pass
 log_every = 20
 seed = 42
 deterministic = True  # if True, enable full reproducibility (slight perf hit ~5-10%)
@@ -237,6 +240,7 @@ save_artifacts = False  # if True, save checkpoint and upload to W&B (auto-enabl
 gradient_checkpointing = False
 source_stage = "sft"  # nanochat checkpoint family: base|mid|sft|rl
 tokenizer_artifact = os.environ.get("TOKENIZER_ARTIFACT", None)
+convergence_loss_threshold = 2.0  # consider run converged if final CE below this and finite
 
 # Grid search knobs
 grid = False
@@ -246,6 +250,8 @@ lr_max = 1e-3
 tokens_min = 5_000
 tokens_max = 500_000
 checkpoint_every = 32
+grid_i = 0
+grid_j = 0
 
 # Derived/configurable keys list
 config_keys = [
@@ -291,7 +297,7 @@ if debug:
     print0(f"[DEBUG MODE] num_tokens={num_tokens}, log_every={log_every}, save_artifacts={save_artifacts}")
 
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "fractal-llm")
-WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "morgan")
+WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "morgy")
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +319,10 @@ class DocVQADataset(IterableDataset):
         if dataset_revision:
             load_kwargs["revision"] = dataset_revision
         ds = load_dataset(dataset_id, **load_kwargs)
-        ds = ds.shuffle(seed=self.seed, buffer_size=2048)
+        # Keep deterministic ordering to mirror fractal-boundary experiments.
+        # Avoid shuffle buffers that introduce nondeterminism across runs.
+        if not deterministic:
+            ds = ds.shuffle(seed=self.seed, buffer_size=2048)
         if self.world_size > 1:
             ds = ds.shard(num_shards=self.world_size, index=self.rank)
         for sample in ds:
@@ -383,9 +392,8 @@ def collate_sft(batch, pad_token_id: int):
     )
 
 
-def build_dataloader(tokenizer, seed, world_size, rank) -> DataLoader:
-    dataset = DocVQADataset(tokenizer, split="train", seed=seed, world_size=world_size, rank=rank)
-    # Use assistant_end as pad token (same as nanochat's chat_sft.py)
+def build_dataloader(tokenizer, seed, world_size, rank, split: str = "train") -> DataLoader:
+    dataset = DocVQADataset(tokenizer, split=split, seed=seed, world_size=world_size, rank=rank)
     pad_token_id = tokenizer.encode_special("<|assistant_end|>")
 
     def collate_fn(batch):
@@ -412,7 +420,7 @@ def ensure_tokenizer(tokenizer_id: str | None, artifact_root: Path | None) -> Pa
     required = ["tokenizer.pkl", "tokenizer.json", "vocab.json", "merges.txt", "token_bytes.pt", "tokenizer_config.json"]
 
     def has_required(path: Path) -> bool:
-        return all((path / r).exists() for r in ["tokenizer.pkl"])
+        return all((path / r).exists() for r in required)
 
     if has_required(tok_dir):
         return tok_dir
@@ -693,7 +701,7 @@ def train_once(
     # wandb
     use_dummy = run == "dummy" or not master
     run_name = run
-    if grid and grid_i is not None and grid_j is not None:
+    if (grid or grid_i != 0 or grid_j != 0) and run:
         run_name = f"{run}-g{grid_i}-{grid_j}"
     wb = (
         DummyWandb()
@@ -731,7 +739,7 @@ def train_once(
     data_iter = itertools.chain([first_batch], data_iter)
 
     examples_per_step = device_batch_size * world_size
-    grad_accum = max(1, target_examples_per_step // examples_per_step)
+    grad_accum = 1 if target_examples_per_step <= 0 else max(1, target_examples_per_step // examples_per_step)
     total_steps = num_iterations if num_iterations > 0 else derive_num_iterations(tokens_per_batch, grad_accum, tokens_goal, world_size)
     warmup_steps = max(1, int(total_steps * warmup_frac))
 
@@ -753,8 +761,14 @@ def train_once(
     error = None
     final_loss = float("inf")
 
-    autocast_dtype = torch.bfloat16 if dtype == "bfloat16" and device_type == "cuda" else torch.float32
-    if device_type == "cuda":
+    bf16_ok = device_type == "cuda" and torch.cuda.is_bf16_supported()
+    use_bf16 = dtype == "bfloat16" and bf16_ok
+    use_fp16 = dtype == "float16" and device_type == "cuda"
+    use_autocast = use_bf16 or use_fp16
+    autocast_dtype = torch.bfloat16 if use_bf16 else (torch.float16 if use_fp16 else torch.float32)
+    scaler = GradScaler(enabled=use_fp16)  # disabled for fp32/bf16
+
+    if use_autocast:
         def cast_ctx():
             return torch.amp.autocast(device_type=device_type, dtype=autocast_dtype)
     else:
@@ -779,10 +793,13 @@ def train_once(
                         outputs = model(input_ids=b_input, attention_mask=b_attn, labels=b_labels)
                         loss = outputs.loss
                     except TypeError:
-                        # nanochat GPT expects positional args (idx, targets)
                         out = model(idx=b_input, targets=b_labels)
                         loss = out["loss"] if isinstance(out, dict) else out
-                (loss / grad_accum).backward()
+                scaled_loss = loss / grad_accum
+                if scaler.is_enabled():
+                    scaler.scale(scaled_loss).backward()
+                else:
+                    scaled_loss.backward()
                 running_loss += loss.detach()
                 num_tokens_step += int((b_labels >= 0).sum().item())
 
@@ -790,7 +807,11 @@ def train_once(
             mult = lr_mult(step_idx)
             for pg in optim.param_groups:
                 pg["lr"] = lr * mult
-            optim.step()
+            if scaler.is_enabled():
+                scaler.step(optim)
+                scaler.update()
+            else:
+                optim.step()
             tokens_seen += num_tokens_step * world_size  # tokens counted on all ranks
 
             # reduce loss for logging
@@ -799,6 +820,9 @@ def train_once(
                 dist.all_reduce(loss_item, op=dist.ReduceOp.AVG)
             loss_scalar = loss_item.item()
             final_loss = loss_scalar
+            if not math.isfinite(loss_scalar):
+                error = "non-finite loss detected"
+                break
             losses.append(loss_scalar)
 
             if master and (step_idx % log_every == 0 or step_idx + 1 == total_steps):
@@ -813,14 +837,31 @@ def train_once(
                 )
 
             if master and eval_every > 0 and (step_idx + 1) % eval_every == 0:
-                wb.log({"eval/placeholder": loss_scalar})  # simple placeholder to mirror chat_sft cadence
+                # Lightweight validation on a few batches (rank 0 only)
+                model.eval()
+                val_loader = build_dataloader(tokenizer, seed=run_seed + 999, world_size=1, rank=0, split="validation")
+                val_losses = []
+                with torch.no_grad():
+                    for b_idx, (v_input, v_attn, v_labels) in enumerate(val_loader):
+                        if b_idx >= eval_batches:
+                            break
+                        v_input, v_attn, v_labels = v_input.to(device), v_attn.to(device), v_labels.to(device)
+                        with cast_ctx():
+                            out = model(input_ids=v_input, attention_mask=v_attn, labels=v_labels)
+                            v_loss = out.loss
+                        val_losses.append(v_loss.item())
+                if val_losses:
+                    val_loss_mean = float(np.mean(val_losses))
+                    wb.log({"eval/loss": val_loss_mean, "eval/batches": len(val_losses)})
+                    print0(f"eval loss={val_loss_mean:.4f} over {len(val_losses)} batches")
+                model.train()
 
     except Exception as exc:  # pylint: disable=broad-except
         error = str(exc)
         print0(f"[ERROR] training failed: {error}")
 
     runtime_s = time.time() - start_time
-    converged = error is None and math.isfinite(final_loss) and final_loss < 10.0
+    converged = error is None and math.isfinite(final_loss) and final_loss < convergence_loss_threshold
     avg_loss = float(np.mean(losses)) if losses else float("inf")
 
     # Save checkpoint and upload artifact (single runs only, not grid)
@@ -1038,7 +1079,7 @@ def main():
         device_type = autodetect_device_type()
         runtime = compute_init(device_type)
         runtime = runtime + (device_type,)
-        res = train_once(runtime=runtime)
+        res = train_once(runtime=runtime, grid_i=grid_i, grid_j=grid_j)
         if int(os.environ.get("RANK", 0)) == 0:
             print0(f"\nFinal: loss={res.final_loss:.4f} tokens_seen={res.tokens_seen:,} converged={res.converged}")
 

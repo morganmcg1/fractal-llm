@@ -74,6 +74,8 @@ for point in "${GRID_POINTS[@]}"; do
   cmd="CUDA_VISIBLE_DEVICES=${gpu} WANDB_MODE=disabled HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-0} \
 python -m src.finetune \
   --run ${RUN_PREFIX}-g${gi}-${gj} \
+  --grid_i ${gi} \
+  --grid_j ${gj} \
   --learning_rate ${lr} \
   --num_tokens ${tok} \
   --eval_every 0 \

@@ -3,7 +3,7 @@ Run nanochat d20 training on Modal with 8×H100 and push artifacts to W&B.
 
 This script clones the upstream nanochat repo inside the Modal container,
 runs the speedrun (d20) script, and uploads the resulting checkpoint/report
-to W&B (entity= morgan, project= fractal-llm).
+to W&B (entity= morgy, project= fractal-llm).
 
 Usage (from host):
     uv run modal run src/nanochat_modal.py --wandb-name my-d20-modal-run
@@ -26,7 +26,7 @@ if LOCAL_ENV_PATH.exists():
     load_dotenv(LOCAL_ENV_PATH, override=False)
 
 # Configuration from .env (with defaults for backwards compatibility)
-WANDB_ENTITY = os.getenv("WANDB_ENTITY", "morgan")
+WANDB_ENTITY = os.getenv("WANDB_ENTITY", "morgy")
 WANDB_PROJECT = os.getenv("WANDB_PROJECT", "fractal-llm")
 NANOCHAT_REPO = "https://github.com/karpathy/nanochat.git"
 BRANCH = ""  # use upstream default branch
