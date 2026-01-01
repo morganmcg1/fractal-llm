@@ -26,7 +26,7 @@ for gpu in $(seq 0 $((NGPUS - 1))); do
   log="${LOG_DIR}/run_${gpu}.log"
   echo "[repro] GPU ${gpu} -> ${log}"
   CUDA_VISIBLE_DEVICES=${gpu} WANDB_MODE=disabled HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-0} \
-    python -m src.finetune_modal_app \
+    python -m src.finetune \
       --run "${RUN_PREFIX}-g${gpu}" \
       --learning_rate "${LR}" \
       --num_tokens "${TOKENS}" \

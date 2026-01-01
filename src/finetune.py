@@ -3,18 +3,18 @@ Finetune nanochat-style on a single 8×GPU node (no Modal) and optionally sweep 
 
 Usage:
   # single run on 8 GPUs (DDP, data parallel)
-  torchrun --standalone --nproc_per_node=8 -m src.finetune_modal_app -- --run myrun --learning_rate=3e-4 --num_tokens=200000
+  torchrun --standalone --nproc_per_node=8 -m src.finetune -- --run myrun --learning_rate=3e-4 --num_tokens=200000
 
   # debug/smoke test (minimal data, fast iteration, saves artifacts)
-  torchrun --standalone --nproc_per_node=1 -m src.finetune_modal_app -- --debug
+  torchrun --standalone --nproc_per_node=1 -m src.finetune -- --debug
 
   # grid search (runs sequentially, all 8 GPUs work on each point together)
-  torchrun --standalone --nproc_per_node=8 -m src.finetune_modal_app -- --grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5
+  torchrun --standalone --nproc_per_node=8 -m src.finetune -- --grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5
 
   # PARALLEL grid search: run 8 independent single-GPU experiments (RECOMMENDED for fractal grids)
   # This gives 8x throughput for grid search by running different (lr, tokens) combinations in parallel
   for gpu in {0..7}; do
-    CUDA_VISIBLE_DEVICES=$gpu python -m src.finetune_modal_app --run grid-$gpu --learning_rate=<lr_$gpu> --num_tokens=<tokens_$gpu> &
+    CUDA_VISIBLE_DEVICES=$gpu python -m src.finetune --run grid-$gpu --learning_rate=<lr_$gpu> --num_tokens=<tokens_$gpu> &
   done
   wait
 

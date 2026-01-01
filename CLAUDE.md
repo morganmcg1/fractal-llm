@@ -119,7 +119,7 @@ MODAL_ENVIRONMENT=fractal-llm uv run modal run --detach src/nanochat_modal.py \
 # WANDB_RUN is set from wandb-name to avoid 'dummy' runs; artifact packs model_out.tar.gz + tokenizer/* + report.md
 
 # Local finetune using a specific W&B artifact (no Modal; torchrun on 1–8 GPUs)
-torchrun --standalone --nproc_per_node=1 -m src.finetune_modal_app \
+torchrun --standalone --nproc_per_node=1 -m src.finetune \
   --model_id="wandb:morgan/fractal-llm/nanochat-d20-20251230-r3-sft-artifact:v0" \
   --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0
 

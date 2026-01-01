@@ -72,7 +72,7 @@ for point in "${GRID_POINTS[@]}"; do
   echo "[grid] GPU ${gpu} -> (${gi},${gj}) lr=${lr} tok=${tok} :: ${log}"
 
   cmd="CUDA_VISIBLE_DEVICES=${gpu} WANDB_MODE=disabled HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-0} \
-python -m src.finetune_modal_app \
+python -m src.finetune \
   --run ${RUN_PREFIX}-g${gi}-${gj} \
   --learning_rate ${lr} \
   --num_tokens ${tok} \

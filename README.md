@@ -17,13 +17,40 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
 `uv run eval/run_lmeval.py --model nanochat-students/nanochat-d20 --tasks hellaswag,arc_challenge --max-samples 500`
 
 5) **Local finetune (nanochat-style, torchrun on 8 GPUs)**
-   - Fast smoke: `torchrun --standalone --nproc_per_node=1 -m src.finetune_modal_app --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=10 --eval_every=0`
+   - Fast smoke: `torchrun --standalone --nproc_per_node=1 -m src.finetune --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=10 --eval_every=0`
    - Full grid + visuals (writes JSON+PNG+fractal JSON to `results/`, logs W&B if `WANDB_RUN` set):  
-     `torchrun --standalone --nproc_per_node=8 -m src.finetune_modal_app --grid=True --run=fractal-grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5`
+     `torchrun --standalone --nproc_per_node=8 -m src.finetune --grid=True --run=fractal-grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5`
    - Use a specific W&B artifact as the model source:  
-     `torchrun --standalone --nproc_per_node=1 -m src.finetune_modal_app --model_id="wandb:morgan/fractal-llm/nanochat-d20-20251230-r3-sft-artifact:v0" --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0`
-   - Parallel single-GPU grid sweep (recommended for throughput + reproducibility):  
-     `RUN_PREFIX=grid-smoke GPUS=\"0 1 2 3 4 5 6 7\" RES=2 TOK_MIN=5e2 TOK_MAX=5e2 LR_MIN=3e-4 LR_MAX=3e-4 MODEL_ID=/workspaces/fractal-llm/results/model_cache/nanochat-d20-20251230-r3-sft-artifact_v0/checkpoints DATASET_ID=morgan/docvqa-nanochat ./scripts/grid_sweep.sh`
+     `torchrun --standalone --nproc_per_node=1 -m src.finetune --model_id="wandb:morgan/fractal-llm/nanochat-d20-20251230-r3-sft-artifact:v0" --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0`
+
+### Local Grid Sweep (parallel single-GPU)
+1) Cache model/tokenizer locally (e.g., `/workspaces/fractal-llm/results/model_cache/nanochat-d20-20251230-r3-sft-artifact_v0/checkpoints`). Cache DocVQA once, then set `HF_DATASETS_OFFLINE=1` for repeatable sweeps.
+2) Select GPUs: `GPUS="0 1 2 3 4 5 6 7"` (one run per ID).
+3) Launch sweep with `scripts/grid_sweep.sh` (logs → `results/grid_logs/<RUN_PREFIX>/`):
+   ```bash
+   RUN_PREFIX=grid-smoke \
+   GPUS="0 1 2 3 4 5 6 7" \
+   RES=16 \
+   LR_MIN=1e-5 LR_MAX=1e-3 \
+   TOK_MIN=5e3 TOK_MAX=5e5 \
+   MODEL_ID=/workspaces/fractal-llm/results/model_cache/nanochat-d20-20251230-r3-sft-artifact_v0/checkpoints \
+   DATASET_ID=morgan/docvqa-nanochat \
+   # optional: pin HF commit
+   DATASET_REVISION=main \
+   MAX_SEQ_LEN=256 \
+   HF_DATASETS_OFFLINE=1 \
+   ./scripts/grid_sweep.sh
+   ```
+   - Overrides: `LR_FIXED` or `TOKENS_PER_RUN` lock LR/tokens instead of logspace; `RUN_PREFIX` names outputs; `LOG_DIR` changes destination.
+   - Output: per-point logs `run_<i>_<j>.log`; summary prints unique final losses (should match when deterministic).
+
+
+### NanoChat
+
+To run a full nanochat run, including RL, as well as artifact and tokenizer saving for each stage, run this:
+```
+export NANOCHAT_BASE_DIR=/var/tmp/nanochat && WANDB_RUN=nanochat-fin WANDB_PROJECT=fractal-llm WANDB_ENTITY=morgan NPROC_PER_NODE=8 bash speedrun.sh
+```
 
 ### CoreWeave DevPod storage quota workaround (torch install)
 If torch wheels blow your workspace quota, put the venv on `/var/tmp` and keep the torch install to one copy:
