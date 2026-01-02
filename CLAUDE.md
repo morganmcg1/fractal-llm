@@ -80,6 +80,13 @@ devpod provider add kubernetes --name kubernetes-crwv \
 **Disk Storage**
 Coreweave devpod workspace (`/workspaces/fractal-llm`) is tiny. Always store checkpoints, W&B files, HF caches, and datasets under `/var/tmp/fractal-llm` (set `FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm`). The training code now defaults to that location, but double-check when adding new scripts.
 
+**Run a single finetune on devpod GPU (uses /var/tmp)**
+```bash
+cd /workspaces/fractal-llm && source .env && FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm \
+CUDA_VISIBLE_DEVICES=0 MAX_SEQ_LEN=1024 TOKENIZER_ARTIFACT="$MODEL_ARTIFACT" \
+python3 -m src.finetune --run devpod-default --eval_every 0 --log_every 20 --save_artifacts False
+```
+
 **Notes:**
 - Workspace syncs local directory to `/workspaces/fractal-llm` in container (~1.2GB with data/)
 - Container auto-deletes after 1 day of inactivity

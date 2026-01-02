@@ -143,6 +143,13 @@ devpod stop fractal-llm
 devpod delete fractal-llm
 ```
 
+**One-off local finetune on devpod GPU (saves to /var/tmp)**  
+```bash
+cd /workspaces/fractal-llm && source .env && FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm \
+CUDA_VISIBLE_DEVICES=0 MAX_SEQ_LEN=1024 TOKENIZER_ARTIFACT="$MODEL_ARTIFACT" \
+python3 -m src.finetune --run devpod-default --eval_every 0 --log_every 20 --save_artifacts False
+```
+
 **Check cluster workloads:**
 ```bash
 # Node resource usage
