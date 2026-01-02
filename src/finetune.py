@@ -417,7 +417,8 @@ def ensure_tokenizer(tokenizer_id: str | None, artifact_root: Path | None) -> Pa
     base_dir = Path(get_base_dir())
     tok_dir = base_dir / "tokenizer"
     tok_dir.mkdir(parents=True, exist_ok=True)
-    required = ["tokenizer.pkl", "tokenizer.json", "vocab.json", "merges.txt", "token_bytes.pt", "tokenizer_config.json"]
+    # RustBPETokenizer only needs tokenizer.pkl; get_token_bytes needs token_bytes.pt
+    required = ["tokenizer.pkl", "token_bytes.pt"]
 
     def has_required(path: Path) -> bool:
         return all((path / r).exists() for r in required)
