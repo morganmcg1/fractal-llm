@@ -165,6 +165,7 @@ kubectl get pods --all-namespaces --context cks-wb3 \
 
 ## Notes
 - W&B: entity `morgan`, project `fractal-llm`. Fractal sweeps load the model from W&B artifact `nanochat-d20-speedrun:latest`.
+- Always enable W&B metric logging for all runs (do not use `WANDB_MODE=disabled` unless explicitly requested).
 - Modal training image: CUDA 12.8, torch 2.8.0+cu128, installs via `uv pip`; `python-dotenv` and `rich` included; flash-attn omitted.
 - Token budget per grid point is respected (`steps = ceil(tokens / (bs*seq_len))`).
 - WandB terminal UI (beta leet): inspect any run locally via `uv run wandb beta leet https://wandb.ai/morgan/fractal-llm/runs/<run_id>` (handy for Modal jobs).

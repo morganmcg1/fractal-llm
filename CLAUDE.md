@@ -253,6 +253,7 @@ Ensure to always use performant code for running analysis, always use pandas bes
 
 ## Working with Weights & Biases - project and entity to use
 When logging to `wandb` or `weave` from Weights & Biases, always log to the `morgy` entity and the `fractal-llm` project, unless specifically asked to log elsewhere
+**Always enable W&B metric logging for all runs**. Do not disable logging (e.g., `WANDB_MODE=disabled`) unless explicitly asked.
 
 ### WandB terminal UI (beta leet)
 - Inspect runs locally with the new TUI: `uv run wandb beta leet https://wandb.ai/morgan/fractal-llm/runs/<run_id>`
