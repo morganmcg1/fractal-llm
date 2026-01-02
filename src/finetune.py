@@ -719,6 +719,7 @@ def train_once(
                 "run_seed": run_seed,
                 "repro": run_repro,
             },
+            tags=["finetune"],
             save_code=True,
             settings=wandb.Settings(init_timeout=300, _service_wait=300),
         )
