@@ -156,6 +156,41 @@ def repro_context():
 # ---------------------------------------------------------------------------
 # Wire nanochat helpers (style compatibility)
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Default storage: push results, checkpoints, and HF caches to /var/tmp to avoid small workspace quotas.
+STORAGE_ROOT = Path(os.environ.get("FRACTAL_STORAGE_DIR", "/var/tmp/fractal-llm"))
+RESULTS_ROOT = STORAGE_ROOT / "results"
+MODEL_CACHE_ROOT = RESULTS_ROOT / "model_cache"
+CHECKPOINTS_ROOT = RESULTS_ROOT / "checkpoints"
+for _path in [STORAGE_ROOT, RESULTS_ROOT, MODEL_CACHE_ROOT, CHECKPOINTS_ROOT]:
+    _path.mkdir(parents=True, exist_ok=True)
+
+# HuggingFace caches (datasets + hub) and nanochat base dir => /var/tmp by default.
+_storage_env_defaults = {
+    # Hugging Face caches
+    "HF_HOME": "/var/tmp/huggingface",
+    "HF_DATASETS_CACHE": "/var/tmp/huggingface/datasets",
+    "HF_HUB_CACHE": "/var/tmp/huggingface/hub",
+    # nanochat base dir
+    "NANOCHAT_BASE_DIR": "/var/tmp/nanochat",
+    # WandB local files/config/cache
+    "WANDB_DIR": str(STORAGE_ROOT / "wandb"),
+    "WANDB_CONFIG_DIR": str(STORAGE_ROOT / "wandb" / "config"),
+    "WANDB_CACHE_DIR": str(STORAGE_ROOT / "wandb" / "cache"),
+}
+for _k, _v in _storage_env_defaults.items():
+    os.environ.setdefault(_k, _v)
+for _p in [
+    Path(os.environ["HF_HOME"]),
+    Path(os.environ["HF_DATASETS_CACHE"]),
+    Path(os.environ["HF_HUB_CACHE"]),
+    Path(os.environ["NANOCHAT_BASE_DIR"]),
+    Path(os.environ["WANDB_DIR"]),
+    Path(os.environ["WANDB_CONFIG_DIR"]),
+    Path(os.environ["WANDB_CACHE_DIR"]),
+]:
+    _p.mkdir(parents=True, exist_ok=True)
+
 NANOCHAT_DIR = REPO_ROOT / "third_party" / "nanochat"
 DOTENV_CANDIDATES = [
     REPO_ROOT / ".env",
@@ -475,7 +510,7 @@ def resolve_checkpoint_dir(model_ref: str) -> Path:
         art_path = model_ref[len("wandb:") :]
         api = _wandb.Api()
         art = api.artifact(art_path, type="model")
-        cache_root = REPO_ROOT / "results" / "model_cache"
+        cache_root = MODEL_CACHE_ROOT
         cache_root.mkdir(parents=True, exist_ok=True)
         target = cache_root / art.name.replace(":", "_")
         if not target.exists():
@@ -955,8 +990,8 @@ def train_once(
                     {
                         "step": step_idx,
                         "train/loss": loss_scalar,
-                        "lr": lr * mult,
-                        "tokens_seen": tokens_seen,
+                        "train/lr": lr * mult,
+                        "train/tokens_seen": tokens_seen,
                     }
                 )
 
@@ -980,7 +1015,7 @@ def train_once(
                         val_losses.append(v_loss.item())
                 if val_losses:
                     val_loss_mean = float(np.mean(val_losses))
-                    wb.log({"eval/loss": val_loss_mean, "eval/batches": len(val_losses)})
+                    wb.log({"val/loss": val_loss_mean, "val/batches": len(val_losses)})
                     print0(f"eval loss={val_loss_mean:.4f} over {len(val_losses)} batches")
                 model.train()
 
@@ -1003,7 +1038,7 @@ def train_once(
         raw_model = model.module if ddp else model
 
         # Save checkpoint locally
-        checkpoint_dir = REPO_ROOT / "results" / "checkpoints" / run_name
+        checkpoint_dir = CHECKPOINTS_ROOT / run_name
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         model_config_kwargs = raw_model.config.__dict__ if hasattr(raw_model, "config") else {}
         save_checkpoint(
@@ -1103,7 +1138,7 @@ def run_grid_search():
             if int(os.environ.get("RANK", 0)) == 0:
                 results.append(res)
                 # checkpoint to disk
-                ckpt_dir = REPO_ROOT / "results"
+                ckpt_dir = RESULTS_ROOT
                 ckpt_dir.mkdir(exist_ok=True, parents=True)
                 ckpt_path = ckpt_dir / f"finetune_grid_{resolution}x{resolution}.json"
                 with open(ckpt_path, "w", encoding="utf-8") as f:
@@ -1113,7 +1148,7 @@ def run_grid_search():
     # Rank 0: finalize artifacts
     if int(os.environ.get("RANK", 0)) == 0:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_dir = REPO_ROOT / "results"
+        results_dir = RESULTS_ROOT
         results_dir.mkdir(exist_ok=True, parents=True)
         prefix = results_dir / f"finetune_grid_{resolution}x{resolution}_{timestamp}"
         results_path = prefix.with_suffix(".json")
@@ -1219,7 +1254,7 @@ def main():
 
             # Save results JSON (single run artifact)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            results_dir = REPO_ROOT / "results"
+            results_dir = RESULTS_ROOT
             results_dir.mkdir(exist_ok=True, parents=True)
             results_path = results_dir / f"finetune_single_{run}_{timestamp}.json"
             repro = repro_context() | {

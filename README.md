@@ -21,7 +21,7 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    - Full grid + visuals (writes JSON+PNG+fractal JSON to `results/`, logs W&B if `WANDB_RUN` set):  
      `torchrun --standalone --nproc_per_node=8 -m src.finetune --grid=True --run=fractal-grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5`
    - Use a specific W&B artifact as the model source:  
-     `torchrun --standalone --nproc_per_node=1 -m src.finetune --model_id="wandb:morgan/fractal-llm/nanochat-d20-20251230-r3-sft-artifact:v0" --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0`
+     `torchrun --standalone --nproc_per_node=1 -m src.finetune --model_id="wandb:morgy/fractal-llm/nanochat-fin-rl-artifact:v7" --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0`
 
 ### Local Grid Sweep (parallel single-GPU)
 1) Cache model/tokenizer locally (e.g., `/workspaces/fractal-llm/results/model_cache/nanochat-d20-20251230-r3-sft-artifact_v0/checkpoints`). Cache DocVQA once, then set `HF_DATASETS_OFFLINE=1` for repeatable sweeps.
@@ -119,7 +119,7 @@ uv run data/prepare_docvqa.py --out_path data/docvqa_val.jsonl --split validatio
 
 ## CoreWeave DevPod (Remote GPU Development)
 
-Remote development on CoreWeave's Kubernetes cluster with H200 GPUs.
+Remote development on CoreWeave's Kubernetes cluster with H200 GPUs. Workspace disk is tiny; store all checkpoints, datasets, HF caches, and W&B files under `/var/tmp/fractal-llm` (set `FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm`).
 
 **Prerequisites:** `brew install kubectl devpod`
 
