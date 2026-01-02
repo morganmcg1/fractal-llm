@@ -256,12 +256,12 @@ dataset_revision = os.environ.get("DATASET_REVISION", None)
 max_seq_len = int(os.environ.get("MAX_SEQ_LEN", "1024"))  # nanochat default=2048, DocVQA avg ~400 tokens
 dtype = "bfloat16"  # float32 | bfloat16 | float16 (bfloat16 matches model weights)
 device_batch_size = 8  # aim for the largest batch that fits; override via CLI/ENV if needed
-# H200 / ~140GiB: probed stable device_batch_size=51 for this config (MAX_SEQ_LEN=1024).
-# (62 fits for a single step but OOMs within a few steps due to variable sequence lengths / allocator growth.)
+# H200 / ~140GiB: probed stable device_batch_size=48 for this config (MAX_SEQ_LEN=1024),
+# running 100 steps with 3 eval rounds (eval_every=33, eval_batches=4).
 if torch.cuda.is_available():
     _total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     if _total_gb >= 120:
-        device_batch_size = 51
+        device_batch_size = 48
 # Set 0 to force grad_accum_steps=1; otherwise acts as a target effective batch size.
 target_examples_per_step = 0
 learning_rate = 3e-4

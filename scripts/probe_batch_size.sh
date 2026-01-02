@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Probe the maximum `device_batch_size` that fits on a single GPU for src/finetune.py.
-# Uses a short run (fixed steps) and binary-searches the max batch size.
+# Runs a multi-step training + periodic evals to catch allocator/sequence-length spikes.
+# By default, searches batch sizes in steps of 8 (preferred divisibility).
 
 set -euo pipefail
 [[ ${DEBUG_PROBE:-0} -eq 1 ]] && set -x
@@ -13,12 +14,16 @@ LOG_DIR=${LOG_DIR:-${FRACTAL_STORAGE_DIR}/results/batch_probe_logs/${RUN_PREFIX}
 
 LR=${LR:-3e-4}
 SEED=${SEED:-999}
-NUM_ITERATIONS=${NUM_ITERATIONS:-2}
+NUM_ITERATIONS=${NUM_ITERATIONS:-100}
 NUM_TOKENS=${NUM_TOKENS:-5000}
 MAX_SEQ_LEN=${MAX_SEQ_LEN:-1024}
+EVAL_EVERY=${EVAL_EVERY:-33}         # 100 steps -> eval at 33, 66, 99 (3 eval rounds)
+EVAL_BATCHES=${EVAL_BATCHES:-4}
+LOG_EVERY=${LOG_EVERY:-10}
 
-BS_START=${BS_START:-8}
+BS_START=${BS_START:-32}
 BS_MAX=${BS_MAX:-256}
+BS_STRIDE=${BS_STRIDE:-8}
 
 MODEL_ID=${MODEL_ID:-${MODEL_ARTIFACT:-}}
 DATASET_ID=${DATASET_ID:-}
@@ -31,7 +36,8 @@ FINETUNE_WANDB_TAGS=${FINETUNE_WANDB_TAGS:-batch-probe}
 mkdir -p "${LOG_DIR}"
 echo "[probe] logging to ${LOG_DIR}"
 echo "[probe] GPU=${GPU} LR=${LR} seed=${SEED} steps=${NUM_ITERATIONS} tokens_goal=${NUM_TOKENS} max_seq_len=${MAX_SEQ_LEN}"
-echo "[probe] batch_size_start=${BS_START} batch_size_max=${BS_MAX}"
+echo "[probe] eval_every=${EVAL_EVERY} eval_batches=${EVAL_BATCHES} log_every=${LOG_EVERY}"
+echo "[probe] batch_size_start=${BS_START} batch_size_max=${BS_MAX} stride=${BS_STRIDE}"
 echo "[probe] W&B project=${WANDB_PROJECT} entity=${WANDB_ENTITY} tags=${FINETUNE_WANDB_TAGS} sweep_id=${GRID_SWEEP_ID}"
 
 extra_args=()
@@ -58,8 +64,9 @@ run_trial() {
       --device_batch_size "${bs}" \
       --num_iterations "${NUM_ITERATIONS}" \
       --num_tokens "${NUM_TOKENS}" \
-      --eval_every 0 \
-      --log_every 1 \
+      --eval_every "${EVAL_EVERY}" \
+      --eval_batches "${EVAL_BATCHES}" \
+      --log_every "${LOG_EVERY}" \
       --save_artifacts False \
       --max_seq_len "${MAX_SEQ_LEN}" \
       "${extra_args[@]}" \
@@ -75,26 +82,17 @@ run_trial() {
   fi
 }
 
-is_power_of_two() {
-  local n=$1
-  (( n > 0 && (n & (n - 1)) == 0 ))
-}
-
 last_ok=0
 first_bad=0
 
 bs=${BS_START}
+if (( bs % BS_STRIDE != 0 )); then
+  bs=$(( (bs / BS_STRIDE + 1) * BS_STRIDE ))
+fi
 while (( bs <= BS_MAX )); do
   if run_trial "${bs}"; then
     last_ok=${bs}
-    if (( bs == BS_MAX )); then
-      break
-    fi
-    if is_power_of_two "${bs}"; then
-      bs=$((bs * 2))
-    else
-      bs=$((bs + 1))
-    fi
+    bs=$((bs + BS_STRIDE))
   else
     first_bad=${bs}
     break
@@ -111,17 +109,4 @@ if (( first_bad == 0 )); then
   exit 0
 fi
 
-lo=${last_ok}
-hi=$((first_bad - 1))
-echo "[probe] coarse bracket: ok=${last_ok} bad=${first_bad} -> searching [${lo}, ${hi}]"
-
-while (( lo < hi )); do
-  mid=$(((lo + hi + 1) / 2))
-  if run_trial "${mid}"; then
-    lo=${mid}
-  else
-    hi=$((mid - 1))
-  fi
-done
-
-echo "[probe] Max device_batch_size that fits: ${lo}"
+echo "[probe] Max device_batch_size that fits (stride=${BS_STRIDE}): ${last_ok}"
