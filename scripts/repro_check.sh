@@ -37,6 +37,7 @@ for gpu in $(seq 0 $((NGPUS - 1))); do
   echo "[repro] GPU ${gpu} -> ${log}"
   CUDA_VISIBLE_DEVICES=${gpu} HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-0} \
     WANDB_PROJECT=${WANDB_PROJECT} WANDB_ENTITY=${WANDB_ENTITY} \
+    PYTHONUNBUFFERED=1 \
     uv run python -m src.finetune \
       --run "${RUN_PREFIX}-g${gpu}" \
       --learning_rate "${LR}" \
@@ -48,7 +49,7 @@ for gpu in $(seq 0 $((NGPUS - 1))); do
       --deterministic True \
       --seed "${SEED}" \
       "${extra_args[@]}" \
-      >"${log}" 2>&1 &
+      2>&1 | tee "${log}" &
   pids+=($!)
 done
 
