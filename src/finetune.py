@@ -256,10 +256,28 @@ dataset_revision = os.environ.get("DATASET_REVISION", None)
 max_seq_len = int(os.environ.get("MAX_SEQ_LEN", "1024"))  # nanochat default=2048, DocVQA avg ~400 tokens
 dtype = "bfloat16"  # float32 | bfloat16 | float16 (bfloat16 matches model weights)
 device_batch_size = 8  # aim for the largest batch that fits; override via CLI/ENV if needed
+# H200 / 140GB: probed max device_batch_size=62 for this config (MAX_SEQ_LEN=1024).
+if torch.cuda.is_available():
+    _total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    if _total_gb >= 120:
+        device_batch_size = 62
 # Set 0 to force grad_accum_steps=1; otherwise acts as a target effective batch size.
 target_examples_per_step = 0
 learning_rate = 3e-4
+# Differential LRs (nanochat/scripts/chat_sft.py style):
+# - If *_lr is >0, use it directly.
+# - If *_lr is <=0, derive from `learning_rate` via the multipliers below.
+matrix_lr = -1.0
+embedding_lr = -1.0
+unembedding_lr = -1.0
+embedding_lr_mult = 10.0
+unembedding_lr_mult = 0.2
+
+# Note: With nanochat optimizers, weight decay applies only to the AdamW groups
+# (embeddings + unembedding), not the Muon matrix parameters.
 weight_decay = 0.1
+
+# Global scale factor applied to all per-group base LRs before warmup/cosine.
 init_lr_frac = 1.0
 warmup_frac = 0.06
 final_lr_frac = 0.0  # cosine anneals to lr * final_lr_frac (0.0 = full decay to zero)
@@ -827,8 +845,14 @@ def compute_fractal(convergence_grid: np.ndarray):
         "converged_ratio": float(convergence_grid.sum() / convergence_grid.size),
     }
 
-def derive_num_iterations(tokens_per_batch: int, grad_accum_steps: int, tokens_goal: int, world_size: int) -> int:
-    tokens_per_step = max(1, tokens_per_batch * grad_accum_steps * max(1, world_size))
+def derive_num_iterations(tokens_per_microbatch: int, grad_accum_steps: int, tokens_goal: int) -> int:
+    """
+    Derive number of optimizer steps to reach `tokens_goal`.
+
+    `tokens_per_microbatch` is the *global* (all ranks) number of supervised tokens in one
+    microbatch (i.e., one forward/backward pass), so this stays consistent under torchrun.
+    """
+    tokens_per_step = max(1, tokens_per_microbatch * grad_accum_steps)
     return max(1, math.ceil(tokens_goal / tokens_per_step))
 
 
@@ -880,6 +904,16 @@ def train_once(
     sweep_id = grid_sweep_id or datetime.now().strftime("%Y-%m-%d_%H-%M")
     run_tags = list(dict.fromkeys(user_tags + [sweep_id]))  # preserve order, de-dup
 
+    # Effective differential LRs (chat_sft-style) derived from the sweep axis.
+    eff_matrix_lr = float(matrix_lr) if matrix_lr > 0 else lr
+    eff_embedding_lr = float(embedding_lr) if embedding_lr > 0 else eff_matrix_lr * float(embedding_lr_mult)
+    eff_unembedding_lr = float(unembedding_lr) if unembedding_lr > 0 else eff_matrix_lr * float(unembedding_lr_mult)
+    if eff_matrix_lr <= 0 or eff_embedding_lr <= 0 or eff_unembedding_lr <= 0:
+        raise ValueError(
+            f"Non-positive learning rates: matrix_lr={eff_matrix_lr} embedding_lr={eff_embedding_lr} "
+            f"unembedding_lr={eff_unembedding_lr}"
+        )
+
     wb = (
         DummyWandb()
         if use_dummy
@@ -889,13 +923,16 @@ def train_once(
             name=run_name,
             config=user_config
             | {
-                "learning_rate": lr,
+                "learning_rate": eff_matrix_lr,
                 "num_tokens": tokens_goal,
                 "grid_i": grid_i,
                 "grid_j": grid_j,
                 "seed": seed,
                 "repro": run_repro,
                 "grid_sweep_id": sweep_id,
+                "matrix_lr": eff_matrix_lr,
+                "embedding_lr": eff_embedding_lr,
+                "unembedding_lr": eff_unembedding_lr,
             },
             tags=run_tags,
             save_code=True,
@@ -903,13 +940,20 @@ def train_once(
         )
     )
 
+    global_step = 0
+    if not use_dummy:
+        wandb.define_metric("global_step")
+        wandb.define_metric("*", step_metric="global_step")
+
+    def wb_log(payload: dict, step: int):
+        step_i = int(step)
+        wb.log(({"global_step": step_i} | payload), step=step_i)
+
     model, tokenizer = load_model_and_tok(device_type)
     # Cast model to float32 if dtype is float32, fp32 will have higher precision for granular sweeps
     if dtype == "float32":
         model = model.float()
     model.to(device)
-    if ddp:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
     if device_type == "cuda":
         torch.cuda.reset_peak_memory_stats()
 
@@ -920,7 +964,11 @@ def train_once(
     # Peek first batch to estimate tokens/batch (then reuse it)
     first_batch = next(data_iter)
     _, labels_peek = [x.to(device) for x in first_batch]
-    tokens_per_batch = int((labels_peek >= 0).sum().item())
+    tokens_per_microbatch = int((labels_peek >= 0).sum().item())
+    tokens_per_microbatch_t = torch.tensor(tokens_per_microbatch, device=device)
+    if ddp:
+        dist.all_reduce(tokens_per_microbatch_t, op=dist.ReduceOp.SUM)
+    tokens_per_microbatch_global = int(tokens_per_microbatch_t.item())
     data_iter = itertools.chain([first_batch], data_iter)
 
     examples_per_step = device_batch_size * world_size
@@ -932,11 +980,25 @@ def train_once(
         ), "Target examples per step must be divisible by examples per step"
         grad_accum_steps = target_examples_per_step // examples_per_step
     total_steps = num_iterations if num_iterations > 0 else derive_num_iterations(
-        tokens_per_batch, grad_accum_steps, tokens_goal, world_size
+        tokens_per_microbatch_global, grad_accum_steps, tokens_goal
     )
     warmup_steps = max(1, int(total_steps * warmup_frac))
-
-    optim = torch.optim.AdamW(model.parameters(), lr=lr * init_lr_frac, weight_decay=weight_decay)
+    # Optimizers: match nanochat/scripts/chat_sft.py (AdamW for embedding+lm_head, Muon for matrix weights).
+    if not hasattr(model, "setup_optimizers"):
+        raise AttributeError(
+            f"Expected a nanochat GPT model with setup_optimizers(), got {type(model)}. "
+            "If you intended to use a different model, add an optimizer implementation for it."
+        )
+    optimizers = model.setup_optimizers(
+        unembedding_lr=eff_unembedding_lr,
+        embedding_lr=eff_embedding_lr,
+        matrix_lr=eff_matrix_lr,
+        weight_decay=weight_decay,
+    )
+    for opt in optimizers:
+        for group in opt.param_groups:
+            group["lr"] = group["lr"] * init_lr_frac
+            group["initial_lr"] = group["lr"]
 
     def lr_mult(step_idx: int) -> float:
         # linear warmup
@@ -987,7 +1049,7 @@ def train_once(
             if before_data:
                 for row in before_data:
                     generations_table.add_data(*row)
-                wb.log({"samples/generations_incr": generations_table})
+                wb_log({"samples/generations_incr": generations_table}, step=global_step)
                 print0(f"Logged {len(before_data)} validation sample predictions (before training) to wandb table (incremental)")
                 print_generation_table(before_data, stage="before")
 
@@ -1013,7 +1075,7 @@ def train_once(
             pct_trained = 0.0 if total_tokens == 0 else 100 * trained_tokens / total_tokens
             print0(f"Trained tokens (non-masked): {trained_tokens} ({pct_trained:.1f}%)")
             print0(f"Masked tokens (non-pad): {masked_tokens} ({100 - pct_trained:.1f}%)")
-            wb.log({"diagnostic/initial_loss": init_loss, "diagnostic/trained_token_pct": pct_trained})
+            wb_log({"diagnostic/initial_loss": init_loss, "diagnostic/trained_token_pct": pct_trained}, step=global_step)
         model.train()
         print0("=" * 60)
 
@@ -1028,7 +1090,7 @@ def train_once(
     print0("=" * 60)
     try:
         for step_idx in range(total_steps):
-            optim.zero_grad(set_to_none=True)
+            model.zero_grad(set_to_none=True)
             num_tokens_step = 0
             running_loss = 0.0
             for _ in range(grad_accum_steps):
@@ -1051,14 +1113,21 @@ def train_once(
 
             # lr schedule
             mult = lr_mult(step_idx)
-            for pg in optim.param_groups:
-                pg["lr"] = lr * mult
+            for opt in optimizers:
+                for group in opt.param_groups:
+                    group["lr"] = group["initial_lr"] * mult
             if scaler.is_enabled():
-                scaler.step(optim)
+                for opt in optimizers:
+                    scaler.step(opt)
                 scaler.update()
             else:
-                optim.step()
-            tokens_seen += num_tokens_step * world_size  # tokens counted on all ranks
+                for opt in optimizers:
+                    opt.step()
+
+            tokens_step_t = torch.tensor(num_tokens_step, device=device)
+            if ddp:
+                dist.all_reduce(tokens_step_t, op=dist.ReduceOp.SUM)
+            tokens_seen += int(tokens_step_t.item())
 
             # reduce loss for logging
             loss_item = running_loss / grad_accum_steps
@@ -1069,18 +1138,38 @@ def train_once(
             if not math.isfinite(loss_scalar):
                 error = "non-finite loss detected"
                 break
+            global_step += 1
             losses.append(loss_scalar)
 
             if master and (step_idx % log_every == 0 or step_idx + 1 == total_steps):
-                print0(f"step {step_idx+1:05d}/{total_steps:05d} loss={loss_scalar:.4f} lr={lr*mult:.2e} tokens={tokens_seen:,}")
-                wb.log(
-                    {
-                        "step": step_idx,
-                        "train/loss": loss_scalar,
-                        "train/lr": lr * mult,
-                        "train/tokens_seen": tokens_seen,
-                    }
+                if len(optimizers) != 2:
+                    raise ValueError(f"Expected 2 optimizers (AdamW, Muon), got {len(optimizers)}")
+                adamw_opt, muon_opt = optimizers
+                if len(adamw_opt.param_groups) < 2:
+                    raise ValueError(
+                        f"Expected AdamW to have >=2 param groups (lm_head, embedding), got {len(adamw_opt.param_groups)}"
+                    )
+                lr_matrix_now = float(muon_opt.param_groups[0]["lr"])
+                lr_unembedding_now = float(adamw_opt.param_groups[0]["lr"])
+                lr_embedding_now = float(adamw_opt.param_groups[1]["lr"])
+                lr_log = {
+                    "step": step_idx,
+                    "train/loss": loss_scalar,
+                    "train/lr_mult": mult,
+                    "train/lr": lr_matrix_now,
+                    "train/lr_matrix": lr_matrix_now,
+                    "train/lr_embedding": lr_embedding_now,
+                    "train/lr_unembedding": lr_unembedding_now,
+                    "train/tokens_seen": tokens_seen,
+                }
+
+                lr_str = (
+                    f"lr_matrix={lr_log['train/lr_matrix']:.2e} "
+                    f"lr_emb={lr_log['train/lr_embedding']:.2e} "
+                    f"lr_unemb={lr_log['train/lr_unembedding']:.2e}"
                 )
+                print0(f"step {step_idx+1:05d}/{total_steps:05d} loss={loss_scalar:.4f} {lr_str} tokens={tokens_seen:,}")
+                wb_log(lr_log, step=global_step)
 
             if master and eval_every > 0 and (step_idx + 1) % eval_every == 0:
                 # Lightweight validation on a few batches (rank 0 only)
@@ -1097,7 +1186,7 @@ def train_once(
                         val_losses.append(v_loss.item())
                 if val_losses:
                     val_loss_mean = float(np.mean(val_losses))
-                    wb.log({"val/loss": val_loss_mean, "val/batches": len(val_losses)})
+                    wb_log({"val/loss": val_loss_mean, "val/batches": len(val_losses)}, step=global_step)
                     print0(f"eval loss={val_loss_mean:.4f} over {len(val_losses)} batches")
                 model.train()
 
@@ -1113,17 +1202,17 @@ def train_once(
         max_alloc_gb = torch.cuda.max_memory_allocated() / (1024**3)
         max_reserved_gb = torch.cuda.max_memory_reserved() / (1024**3)
         print0(f"[MEM] max_allocated_gb={max_alloc_gb:.2f} max_reserved_gb={max_reserved_gb:.2f}")
-        wb.log({"memory/max_allocated_gb": max_alloc_gb, "memory/max_reserved_gb": max_reserved_gb})
+        wb_log({"memory/max_allocated_gb": max_alloc_gb, "memory/max_reserved_gb": max_reserved_gb}, step=global_step)
 
     # Generate predictions AFTER training on same baseline samples and log to wandb
     after_data = None
     if master and generations_table is not None and baseline_samples and not use_dummy:
-        after_data = generate_sample_predictions(model, tokenizer, baseline_samples, device, cast_ctx, step=total_steps)
+        after_data = generate_sample_predictions(model, tokenizer, baseline_samples, device, cast_ctx, step=global_step)
         if after_data:
             for row in after_data:
                 generations_table.add_data(*row)
-            wb.log({"samples/generations_incr": generations_table})
-            print0(f"Logged {len(after_data)} validation sample predictions (after training, step {total_steps}) to wandb table (incremental)")
+            wb_log({"samples/generations_incr": generations_table}, step=global_step)
+            print0(f"Logged {len(after_data)} validation sample predictions (after training, step {global_step}) to wandb table (incremental)")
             print_generation_table(after_data, stage="after")
 
     # Log a final immutable table for stable viewing in the W&B UI
@@ -1133,7 +1222,7 @@ def train_once(
             data=generations_table.data,
             log_mode="IMMUTABLE",
         )
-        wb.log({"samples/generations": final_table})
+        wb_log({"samples/generations": final_table}, step=global_step)
         print0(f"Logged final generations table with {len(generations_table.data)} rows to wandb")
 
     # Display: show predictions after training (fallback if no table data)
@@ -1143,8 +1232,7 @@ def train_once(
 
     # Save checkpoint and upload artifact (single runs only, not grid)
     if master and save_artifacts and not grid:
-        # Unwrap DDP if needed
-        raw_model = model.module if ddp else model
+        raw_model = getattr(model, "module", model)
 
         # Save checkpoint locally
         checkpoint_dir = CHECKPOINTS_ROOT / run_name
@@ -1152,15 +1240,18 @@ def train_once(
         model_config_kwargs = raw_model.config.__dict__ if hasattr(raw_model, "config") else {}
         save_checkpoint(
             str(checkpoint_dir),
-            total_steps,
+            global_step,
             raw_model.state_dict(),
             None,  # don't save optimizer state
             {
-                "step": total_steps,
+                "step": global_step,
                 "final_loss": final_loss,
                 "tokens_seen": tokens_seen,
                 "converged": converged,
-                "learning_rate": lr,
+                "learning_rate": eff_matrix_lr,
+                "matrix_lr": eff_matrix_lr,
+                "embedding_lr": eff_embedding_lr,
+                "unembedding_lr": eff_unembedding_lr,
                 "model_config": model_config_kwargs,
             },
             rank=0,
@@ -1187,18 +1278,19 @@ def train_once(
         wb.finish()
 
     # cleanup
+    del optimizers
     del model
     torch.cuda.empty_cache()
 
     return RunResult(
         run_name=run,
-        learning_rate=lr,
+        learning_rate=eff_matrix_lr,
         num_tokens_target=tokens_goal,
         tokens_seen=tokens_seen,
         avg_loss=avg_loss,
         final_loss=final_loss,
         converged=converged,
-        steps=total_steps,
+        steps=global_step,
         runtime_s=runtime_s,
         seed=seed,
         world_size=world_size,
