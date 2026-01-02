@@ -167,6 +167,7 @@ for gpu_idx in "${!GPU_IDS[@]}"; do
             "${lr_args[@]}" \
             --num_tokens "${tok}" \
             --eval_every 0 \
+            --eval_batches 0 \
             --log_every 5 \
             --save_artifacts False \
             --deterministic True \
