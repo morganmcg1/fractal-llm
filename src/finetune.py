@@ -65,7 +65,7 @@ import numpy as np
 import wandb
 from torch.utils.data import IterableDataset, DataLoader
 from datasets import load_dataset
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 
 # ---------------------------------------------------------------------------
 # Reproducibility settings (critical for fractal grid experiments)
@@ -254,9 +254,9 @@ model_id = os.environ.get("MODEL_ARTIFACT", "morgy/fractal-llm/nanochat-fin-rl-a
 dataset_id = os.environ.get("DATASET_ID", "morgan/docvqa-nanochat")
 dataset_revision = os.environ.get("DATASET_REVISION", None)
 max_seq_len = int(os.environ.get("MAX_SEQ_LEN", "1024"))  # nanochat default=2048, DocVQA avg ~400 tokens
-dtype = "bfloat16"  # float32 | bfloat16 | float16 (bfloat16 matches model weights)
+dtype = "float32"  # float32 | bfloat16 | float16 (bfloat16 matches model weights)
 device_batch_size = 8  # aim for the largest batch that fits; override via CLI/ENV if needed
-# Set 0 to force grad_accum=1; otherwise acts as a target effective batch size.
+# Set 0 to force grad_accum_steps=1; otherwise acts as a target effective batch size.
 target_examples_per_step = 0
 learning_rate = 3e-4
 weight_decay = 0.1
@@ -268,7 +268,7 @@ num_iterations = -1  # derived from num_tokens if -1
 eval_every = 200
 eval_batches = 4  # number of validation batches per eval pass
 log_every = 20
-seed = 42
+seed = 999
 deterministic = True  # if True, enable full reproducibility (slight perf hit ~5-10%)
 debug = False  # if True, run a quick smoke test with minimal data
 save_artifacts = False  # if True, save checkpoint and upload to W&B (auto-enabled in debug mode)
@@ -322,8 +322,8 @@ user_config = {k: globals()[k] for k in config_keys}
 env_run = os.environ.get("WANDB_RUN")
 if env_run:
     run = env_run
-if run != "dummy" and not run.endswith("-sft"):
-    run = f"{run}-sft"
+if run != "dummy" and not run.endswith("-ft"):
+    run = f"{run}-ft"
 
 # Debug mode: override to minimal settings for a quick smoke test
 if debug:
@@ -376,7 +376,7 @@ class DocVQADataset(IterableDataset):
             mask = mask[:max_seq_len]
             if orig_len > max_seq_len and self.rank == 0:
                 # Log truncation warning once per sample on rank 0
-                print0(f"[WARN] Truncated sample from {orig_len} to {max_seq_len} tokens")
+                print0(f"[WARN] Truncated sample from {orig_len} tokens to {max_seq_len} tokens")
             if len(ids) < 2:
                 continue  # Need at least 2 tokens for next-token prediction
 
@@ -398,34 +398,28 @@ class DocVQADataset(IterableDataset):
                 labels,
                 torch.tensor(-1, dtype=torch.long),
             )
-            # Attention mask: all 1s for causal attention (no padding in individual samples)
-            attn = torch.ones_like(input_ids)
-            yield input_ids, attn, labels
+            yield input_ids, labels
 
 
 def collate_sft(batch, pad_token_id: int):
     """Collate variable-length sequences with dynamic padding to longest in batch."""
-    input_ids_list, attn_list, labels_list = zip(*batch)
+    input_ids_list, labels_list = zip(*batch)
     max_len = max(len(ids) for ids in input_ids_list)
 
     padded_input_ids = []
-    padded_attn = []
     padded_labels = []
 
-    for ids, attn, labels in zip(input_ids_list, attn_list, labels_list):
+    for ids, labels in zip(input_ids_list, labels_list):
         pad_len = max_len - len(ids)
         if pad_len > 0:
             padded_input_ids.append(torch.cat([ids, torch.full((pad_len,), pad_token_id, dtype=ids.dtype)]))
-            padded_attn.append(torch.cat([attn, torch.zeros(pad_len, dtype=attn.dtype)]))
             padded_labels.append(torch.cat([labels, torch.full((pad_len,), -1, dtype=labels.dtype)]))
         else:
             padded_input_ids.append(ids)
-            padded_attn.append(attn)
             padded_labels.append(labels)
 
     return (
         torch.stack(padded_input_ids),
-        torch.stack(padded_attn),
         torch.stack(padded_labels),
     )
 
@@ -546,7 +540,7 @@ class RunResult:
     converged: bool
     steps: int
     runtime_s: float
-    run_seed: int
+    seed: int
     world_size: int
     device_type: str
     error: str | None = None
@@ -561,13 +555,12 @@ def capture_baseline_samples(dataloader, device, num_samples: int = 5):
     """Capture fixed samples for before/after comparison."""
     samples = []
     for batch in dataloader:
-        input_ids, attn, labels = [b.to(device) for b in batch]
+        input_ids, labels = [b.to(device) for b in batch]
         for i in range(input_ids.shape[0]):
             if len(samples) >= num_samples:
                 break
             samples.append({
                 "input_ids": input_ids[i].clone(),
-                "attn": attn[i].clone(),
                 "labels": labels[i].clone(),
             })
         if len(samples) >= num_samples:
@@ -575,8 +568,21 @@ def capture_baseline_samples(dataloader, device, num_samples: int = 5):
     return samples
 
 
-def generate_sample_predictions(model, tokenizer, samples, device, cast_ctx, step: int):
-    """Generate predictions for fixed samples and return table data."""
+def generate_sample_predictions(model, tokenizer, samples, device, cast_ctx, step: int, max_gen_tokens: int = 250):
+    """Generate predictions for fixed samples and return table data.
+
+    Args:
+        model: The model to generate from
+        tokenizer: Tokenizer for decoding
+        samples: List of dicts with 'input_ids' and 'labels' tensors
+        device: Device to run on
+        cast_ctx: Autocast context function
+        step: Training step (for logging)
+        max_gen_tokens: Maximum tokens to generate per sample
+
+    Returns:
+        List of [step, sample_idx, prompt_text, generated_text, expected_text]
+    """
     model.eval()
     table_data = []
 
@@ -588,6 +594,7 @@ def generate_sample_predictions(model, tokenizer, samples, device, cast_ctx, ste
             # Find where assistant response starts (first non-masked token)
             non_masked = (labels >= 0).nonzero(as_tuple=True)[0]
             if len(non_masked) == 0:
+                print0(f"[WARN] No non-masked tokens found in sample {idx} during sample generation.")
                 continue
 
             prompt_end = int(non_masked[0].item())
@@ -595,21 +602,17 @@ def generate_sample_predictions(model, tokenizer, samples, device, cast_ctx, ste
             expected_tokens = labels[prompt_end:]
             expected_tokens = expected_tokens[expected_tokens >= 0]
 
-            # Generate from model (greedy, up to 100 tokens)
+            # Generate from model (greedy)
             gen_input = prompt_tokens.unsqueeze(0).to(device)
             generated = []
-            max_gen_len = min(100, len(expected_tokens) + 20)
+            max_gen_len = min(max_gen_tokens, len(expected_tokens) + 20)
             for _ in range(max_gen_len):
                 with cast_ctx():
-                    try:
-                        out = model(input_ids=gen_input)
-                        logits = out.logits[:, -1, :]
-                    except (TypeError, AttributeError):
-                        logits = model(idx=gen_input)
-                        if isinstance(logits, dict):
-                            logits = logits.get("logits", logits)
-                        if hasattr(logits, "shape") and len(logits.shape) == 3:
-                            logits = logits[:, -1, :]
+                    logits = model(gen_input)
+                    if isinstance(logits, dict):
+                        logits = logits.get("logits", logits)
+                    if hasattr(logits, "shape") and len(logits.shape) == 3:
+                        logits = logits[:, -1, :]
                 next_token = logits.argmax(dim=-1)
                 generated.append(next_token.item())
                 gen_input = torch.cat([gen_input, next_token.unsqueeze(0)], dim=1)
@@ -622,94 +625,68 @@ def generate_sample_predictions(model, tokenizer, samples, device, cast_ctx, ste
             expected_text = tokenizer.decode(expected_tokens.tolist()) if len(expected_tokens) > 0 else ""
             generated_text = tokenizer.decode(generated) if generated else ""
 
-            # Truncate for display (wandb tables can handle longer text but keep reasonable)
-            max_len = 500
             table_data.append([
                 step,
                 idx,
-                prompt_text[:max_len] + ("..." if len(prompt_text) > max_len else ""),
-                generated_text[:max_len] + ("..." if len(generated_text) > max_len else ""),
-                expected_text[:max_len] + ("..." if len(expected_text) > max_len else ""),
+                prompt_text,
+                generated_text,
+                expected_text,
             ])
 
     model.train()
     return table_data
 
 
-def visualize_predictions(model, tokenizer, dataloader, device, cast_ctx, num_samples: int = 3, stage: str = "before"):
-    """Generate and display model predictions on validation samples."""
+def print_generation_table(
+    table_data,
+    stage: str,
+    max_prompt: int = 200,
+    max_expected: int = 100,
+    max_generated: int = 100,
+):
+    """Print a generation table (as produced by generate_sample_predictions)."""
+    if not table_data:
+        print0(f"[WARN] No samples to display for {stage} predictions.")
+        return 0
+
+    def truncate(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "..."
+
     print0("=" * 60)
     print0(f"MODEL PREDICTIONS ({stage.upper()} training)")
     print0("=" * 60)
 
-    model.eval()
-    samples_shown = 0
+    for row in table_data:
+        _, idx, prompt_text, generated_text, expected_text = row
 
-    with torch.no_grad():
-        for batch in dataloader:
-            if samples_shown >= num_samples:
-                break
+        prompt_display = truncate(prompt_text, max_prompt)
+        expected_display = truncate(expected_text or "", max_expected)
+        generated_display = truncate(generated_text or "", max_generated)
 
-            input_ids, attn, labels = [b.to(device) for b in batch]
-
-            # For each sample in batch
-            for i in range(min(input_ids.shape[0], num_samples - samples_shown)):
-                sample_input = input_ids[i:i+1]
-                sample_labels = labels[i]
-
-                # Find where the assistant response starts (first non-masked token)
-                non_masked = (sample_labels >= 0).nonzero(as_tuple=True)[0]
-                if len(non_masked) == 0:
-                    continue
-
-                prompt_end = int(non_masked[0].item())
-                prompt_tokens = sample_input[0, :prompt_end]
-                expected_tokens = sample_labels[prompt_end:]
-                expected_tokens = expected_tokens[expected_tokens >= 0]  # Remove padding
-
-                # Generate from model (greedy, 50 tokens max)
-                gen_input = prompt_tokens.unsqueeze(0)
-                generated = []
-                for _ in range(min(50, len(expected_tokens) + 10)):
-                    with cast_ctx():
-                        try:
-                            out = model(input_ids=gen_input)
-                            logits = out.logits[:, -1, :]
-                        except (TypeError, AttributeError):
-                            logits = model(idx=gen_input)
-                            if isinstance(logits, dict):
-                                logits = logits.get("logits", logits)
-                            if hasattr(logits, "shape") and len(logits.shape) == 3:
-                                logits = logits[:, -1, :]
-                    next_token = logits.argmax(dim=-1)
-                    generated.append(next_token.item())
-                    gen_input = torch.cat([gen_input, next_token.unsqueeze(0)], dim=1)
-                    # Stop on EOS or assistant_end token
-                    if next_token.item() in [tokenizer.encode_special("<|assistant_end|>"), 0]:
-                        break
-
-                # Decode for display
-                prompt_text = tokenizer.decode(prompt_tokens.tolist())
-                expected_text = tokenizer.decode(expected_tokens.tolist()) if len(expected_tokens) > 0 else "(empty)"
-                generated_text = tokenizer.decode(generated) if generated else "(empty)"
-
-                # Truncate for display
-                max_display = 200
-                if len(prompt_text) > max_display:
-                    prompt_text = prompt_text[:max_display] + "..."
-
-                print0(f"\n--- Sample {samples_shown + 1} ---")
-                print0(f"Prompt: {prompt_text}")
-                print0(f"Expected: {expected_text[:100]}{'...' if len(expected_text) > 100 else ''}")
-                print0(f"Generated: {generated_text[:100]}{'...' if len(generated_text) > 100 else ''}")
-
-                samples_shown += 1
-                if samples_shown >= num_samples:
-                    break
+        print0(f"\n--- Sample {idx + 1} ---")
+        print0(f"Prompt: {prompt_display}")
+        print0(f"Expected: {expected_display if expected_display else '(empty)'}")
+        print0(f"Generated: {generated_display if generated_display else '(empty)'}")
 
     print0("=" * 60)
-    model.train()
-    return samples_shown
+    return len(table_data)
+
+
+def visualize_predictions(model, tokenizer, dataloader, device, cast_ctx, num_samples: int = 3, stage: str = "before"):
+    """Generate and display model predictions on validation samples."""
+    # Capture samples from dataloader
+    samples = capture_baseline_samples(dataloader, device, num_samples=num_samples)
+
+    # Generate predictions (shorter generation for display)
+    table_data = generate_sample_predictions(
+        model, tokenizer, samples, device, cast_ctx,
+        step=0,  # step not used for display
+        max_gen_tokens=50,
+    )
+
+    return print_generation_table(table_data, stage=stage)
 
 
 def build_grids(results: List[RunResult], resolution: int):
@@ -850,8 +827,8 @@ def compute_fractal(convergence_grid: np.ndarray):
         "converged_ratio": float(convergence_grid.sum() / convergence_grid.size),
     }
 
-def derive_num_iterations(tokens_per_batch: int, grad_accum: int, tokens_goal: int, world_size: int) -> int:
-    tokens_per_step = max(1, tokens_per_batch * grad_accum * max(1, world_size))
+def derive_num_iterations(tokens_per_batch: int, grad_accum_steps: int, tokens_goal: int, world_size: int) -> int:
+    tokens_per_step = max(1, tokens_per_batch * grad_accum_steps * max(1, world_size))
     return max(1, math.ceil(tokens_goal / tokens_per_step))
 
 
@@ -877,13 +854,11 @@ def train_once(
     master = rank == 0
 
     # Reproducibility: set all seeds and enable deterministic mode
-    # Grid points get unique seeds based on position for independent runs
-    run_seed = seed + (grid_i or 0) * 1000 + (grid_j or 0)
-    set_seed(run_seed, rank=rank)
+    set_seed(seed, rank=rank)
     if deterministic:
         enable_deterministic_mode()
     run_repro = repro_context() | {
-        "run_seed": run_seed,
+        "seed": seed,
         "rank": rank,
         "local_rank": local_rank,
         "world_size": world_size,
@@ -918,7 +893,7 @@ def train_once(
                 "num_tokens": tokens_goal,
                 "grid_i": grid_i,
                 "grid_j": grid_j,
-                "run_seed": run_seed,
+                "seed": seed,
                 "repro": run_repro,
                 "grid_sweep_id": sweep_id,
             },
@@ -929,22 +904,34 @@ def train_once(
     )
 
     model, tokenizer = load_model_and_tok(device_type)
+    # Cast model to float32 if dtype is float32, fp32 will have higher precision for granular sweeps
+    if dtype == "float32":
+        model = model.float()
     model.to(device)
     if ddp:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
 
-    dataloader = build_dataloader(tokenizer, seed=run_seed, world_size=world_size, rank=rank)
+    dataloader = build_dataloader(tokenizer, seed=seed, world_size=world_size, rank=rank)
+    pad_token_id = tokenizer.encode_special("<|assistant_end|>")
     data_iter = iter(dataloader)
 
     # Peek first batch to estimate tokens/batch (then reuse it)
     first_batch = next(data_iter)
-    _, attn_peek, _ = [x.to(device) for x in first_batch]
-    tokens_per_batch = int(attn_peek.sum().item())
+    _, labels_peek = [x.to(device) for x in first_batch]
+    tokens_per_batch = int((labels_peek >= 0).sum().item())
     data_iter = itertools.chain([first_batch], data_iter)
 
     examples_per_step = device_batch_size * world_size
-    grad_accum = 1 if target_examples_per_step <= 0 else max(1, target_examples_per_step // examples_per_step)
-    total_steps = num_iterations if num_iterations > 0 else derive_num_iterations(tokens_per_batch, grad_accum, tokens_goal, world_size)
+    if target_examples_per_step <= 0:
+        grad_accum_steps = 1
+    else:
+        assert (
+            target_examples_per_step % examples_per_step == 0
+        ), "Target examples per step must be divisible by examples per step"
+        grad_accum_steps = target_examples_per_step // examples_per_step
+    total_steps = num_iterations if num_iterations > 0 else derive_num_iterations(
+        tokens_per_batch, grad_accum_steps, tokens_goal, world_size
+    )
     warmup_steps = max(1, int(total_steps * warmup_frac))
 
     optim = torch.optim.AdamW(model.parameters(), lr=lr * init_lr_frac, weight_decay=weight_decay)
@@ -979,13 +966,14 @@ def train_once(
         def cast_ctx():
             return nullcontext()
 
-    # Capture baseline samples for before/after comparison (use training data)
+    # Log baseline samples for before/after comparison (use validation data)
     baseline_samples = []
     generations_table = None
+    before_data = None
     if master:
-        baseline_loader = build_dataloader(tokenizer, seed=run_seed, world_size=1, rank=0, split="train")
+        baseline_loader = build_dataloader(tokenizer, seed=seed + 999, world_size=1, rank=0, split="validation")
         baseline_samples = capture_baseline_samples(baseline_loader, device, num_samples=5)
-        print0(f"Captured {len(baseline_samples)} baseline samples for before/after comparison")
+        print0(f"Captured {len(baseline_samples)} validation samples for before/after comparison")
 
         # Generate predictions BEFORE training and log to wandb
         if baseline_samples and not use_dummy:
@@ -998,7 +986,8 @@ def train_once(
                 for row in before_data:
                     generations_table.add_data(*row)
                 wb.log({"samples/generations": generations_table})
-                print0(f"Logged {len(before_data)} sample predictions (before training) to wandb table")
+                print0(f"Logged {len(before_data)} validation sample predictions (before training) to wandb table")
+                print_generation_table(before_data, stage="before")
 
     # Diagnostic: compute initial loss before any training
     if master:
@@ -1008,53 +997,49 @@ def train_once(
         model.eval()
         with torch.no_grad():
             diag_batch = next(iter(dataloader))
-            diag_input, diag_attn, diag_labels = [b.to(device) for b in diag_batch]
+            diag_input, diag_labels = [b.to(device) for b in diag_batch]
             with cast_ctx():
-                try:
-                    out = model(input_ids=diag_input, attention_mask=diag_attn, labels=diag_labels)
-                    init_loss = out.loss.item()
-                except TypeError:
-                    out = model(idx=diag_input, targets=diag_labels)
-                    init_loss = out["loss"].item() if isinstance(out, dict) else out.item()
-            # Token statistics
-            total_tokens = diag_labels.numel()
+                init_loss = model(diag_input, diag_labels).item()
+            # Token statistics (exclude padding)
+            nonpad_mask = (diag_input != pad_token_id) | (diag_labels >= 0)
+            total_tokens = int(nonpad_mask.sum().item())
             trained_tokens = int((diag_labels >= 0).sum().item())
             masked_tokens = total_tokens - trained_tokens
             print0(f"Initial loss (before training): {init_loss:.4f}")
             print0(f"Batch shape: {diag_input.shape}")
-            print0(f"Total tokens in batch: {total_tokens}")
-            print0(f"Trained tokens (non-masked): {trained_tokens} ({100*trained_tokens/total_tokens:.1f}%)")
-            print0(f"Masked tokens: {masked_tokens} ({100*masked_tokens/total_tokens:.1f}%)")
-            wb.log({"diagnostic/initial_loss": init_loss, "diagnostic/trained_token_pct": 100*trained_tokens/total_tokens})
+            print0(f"Total non-pad tokens in batch: {total_tokens}")
+            pct_trained = 0.0 if total_tokens == 0 else 100 * trained_tokens / total_tokens
+            print0(f"Trained tokens (non-masked): {trained_tokens} ({pct_trained:.1f}%)")
+            print0(f"Masked tokens (non-pad): {masked_tokens} ({100 - pct_trained:.1f}%)")
+            wb.log({"diagnostic/initial_loss": init_loss, "diagnostic/trained_token_pct": pct_trained})
         model.train()
         print0("=" * 60)
 
-    # Visualization: show predictions before training
-    if master and visualize:
-        val_loader = build_dataloader(tokenizer, seed=run_seed + 999, world_size=1, rank=0, split="validation")
+    # Visualization: show predictions before training (fallback if no table data)
+    if master and visualize and before_data is None:
+        val_loader = build_dataloader(tokenizer, seed=seed + 999, world_size=1, rank=0, split="validation")
         visualize_predictions(model, tokenizer, val_loader, device, cast_ctx, num_samples=3, stage="before")
 
+    # Training loop
+    print0("=" * 60)
+    print0("Training loop")
+    print0("=" * 60)
     try:
         for step_idx in range(total_steps):
             optim.zero_grad(set_to_none=True)
             num_tokens_step = 0
             running_loss = 0.0
-            for micro in range(grad_accum):
+            for _ in range(grad_accum_steps):
                 try:
                     batch = next(data_iter)
                 except StopIteration:
                     data_iter = iter(dataloader)
                     batch = next(data_iter)
                 batch = [b.to(device) for b in batch]
-                b_input, b_attn, b_labels = batch
+                b_input, b_labels = batch
                 with cast_ctx():
-                    try:
-                        outputs = model(input_ids=b_input, attention_mask=b_attn, labels=b_labels)
-                        loss = outputs.loss
-                    except TypeError:
-                        out = model(idx=b_input, targets=b_labels)
-                        loss = out["loss"] if isinstance(out, dict) else out
-                scaled_loss = loss / grad_accum
+                    loss = model(b_input, b_labels)
+                scaled_loss = loss / grad_accum_steps
                 if scaler.is_enabled():
                     scaler.scale(scaled_loss).backward()
                 else:
@@ -1074,7 +1059,7 @@ def train_once(
             tokens_seen += num_tokens_step * world_size  # tokens counted on all ranks
 
             # reduce loss for logging
-            loss_item = running_loss / grad_accum
+            loss_item = running_loss / grad_accum_steps
             if ddp:
                 dist.all_reduce(loss_item, op=dist.ReduceOp.AVG)
             loss_scalar = loss_item.item()
@@ -1098,20 +1083,15 @@ def train_once(
             if master and eval_every > 0 and (step_idx + 1) % eval_every == 0:
                 # Lightweight validation on a few batches (rank 0 only)
                 model.eval()
-                val_loader = build_dataloader(tokenizer, seed=run_seed + 999, world_size=1, rank=0, split="validation")
+                val_loader = build_dataloader(tokenizer, seed=seed + 999, world_size=1, rank=0, split="validation")
                 val_losses = []
                 with torch.no_grad():
-                    for b_idx, (v_input, v_attn, v_labels) in enumerate(val_loader):
+                    for b_idx, (v_input, v_labels) in enumerate(val_loader):
                         if b_idx >= eval_batches:
                             break
-                        v_input, v_attn, v_labels = v_input.to(device), v_attn.to(device), v_labels.to(device)
+                        v_input, v_labels = v_input.to(device), v_labels.to(device)
                         with cast_ctx():
-                            try:
-                                out = model(input_ids=v_input, attention_mask=v_attn, labels=v_labels)
-                                v_loss = out.loss
-                            except TypeError:
-                                out = model(idx=v_input, targets=v_labels)
-                                v_loss = out["loss"] if isinstance(out, dict) else out
+                            v_loss = model(v_input, v_labels)
                         val_losses.append(v_loss.item())
                 if val_losses:
                     val_loss_mean = float(np.mean(val_losses))
@@ -1127,19 +1107,21 @@ def train_once(
     converged = error is None and math.isfinite(final_loss) and final_loss < convergence_loss_threshold
     avg_loss = float(np.mean(losses)) if losses else float("inf")
 
-    # Visualization: show predictions after training
-    if master and visualize:
-        val_loader = build_dataloader(tokenizer, seed=run_seed + 999, world_size=1, rank=0, split="validation")
-        visualize_predictions(model, tokenizer, val_loader, device, cast_ctx, num_samples=3, stage="after")
-
     # Generate predictions AFTER training on same baseline samples and log to wandb
+    after_data = None
     if master and generations_table is not None and baseline_samples and not use_dummy:
         after_data = generate_sample_predictions(model, tokenizer, baseline_samples, device, cast_ctx, step=total_steps)
         if after_data:
             for row in after_data:
                 generations_table.add_data(*row)
             wb.log({"samples/generations": generations_table})
-            print0(f"Logged {len(after_data)} sample predictions (after training, step {total_steps}) to wandb table")
+            print0(f"Logged {len(after_data)} validation sample predictions (after training, step {total_steps}) to wandb table")
+            print_generation_table(after_data, stage="after")
+
+    # Display: show predictions after training (fallback if no table data)
+    if master and visualize and after_data is None:
+        val_loader = build_dataloader(tokenizer, seed=seed + 999, world_size=1, rank=0, split="validation")
+        visualize_predictions(model, tokenizer, val_loader, device, cast_ctx, num_samples=3, stage="after")
 
     # Save checkpoint and upload artifact (single runs only, not grid)
     if master and save_artifacts and not grid:
@@ -1204,7 +1186,7 @@ def train_once(
         converged=converged,
         steps=total_steps,
         runtime_s=runtime_s,
-        run_seed=run_seed,
+        seed=seed,
         world_size=world_size,
         device_type=device_type,
         error=error,
@@ -1367,7 +1349,7 @@ def main():
             results_dir.mkdir(exist_ok=True, parents=True)
             results_path = results_dir / f"finetune_single_{run}_{timestamp}.json"
             repro = repro_context() | {
-                "run_seed": res.run_seed,
+                "seed": res.seed,
                 "world_size": res.world_size,
                 "device_type": res.device_type,
             }

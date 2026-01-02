@@ -91,7 +91,7 @@ def main():
     rank = dist.get_rank()
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     device = torch.device(f"cuda:{local_rank}")
-    torch.manual_seed(42 + rank)
+    torch.manual_seed(999)
 
     vocab_size = 256
     seq_len = 64
