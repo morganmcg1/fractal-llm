@@ -215,7 +215,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Config (nanochat-style flat globals + configurator)
 run = "dummy"  # wandb run name; "dummy" disables logging
-model_id = os.environ.get("MODEL_ARTIFACT", "wandb:morgan/fractal-llm/nanochat-d20-speedrun:latest")
+model_id = os.environ.get("MODEL_ARTIFACT", "morgy/fractal-llm/nanochat-fin-rl-artifact:v7")
 dataset_id = os.environ.get("DATASET_ID", "morgan/docvqa-nanochat")
 dataset_revision = os.environ.get("DATASET_REVISION", None)
 max_seq_len = int(os.environ.get("MAX_SEQ_LEN", "1024"))  # nanochat default=2048, DocVQA avg ~400 tokens
@@ -237,6 +237,7 @@ seed = 42
 deterministic = True  # if True, enable full reproducibility (slight perf hit ~5-10%)
 debug = False  # if True, run a quick smoke test with minimal data
 save_artifacts = False  # if True, save checkpoint and upload to W&B (auto-enabled in debug mode)
+visualize = False  # if True, show model predictions before/after training
 gradient_checkpointing = False
 source_stage = "sft"  # nanochat checkpoint family: base|mid|sft|rl
 tokenizer_artifact = os.environ.get("TOKENIZER_ARTIFACT", None)
@@ -521,6 +522,82 @@ class RunResult:
 # ---------------------------------------------------------------------------
 # Visualization and analysis helpers
 
+def visualize_predictions(model, tokenizer, dataloader, device, cast_ctx, num_samples: int = 3, stage: str = "before"):
+    """Generate and display model predictions on validation samples."""
+    print0("=" * 60)
+    print0(f"MODEL PREDICTIONS ({stage.upper()} training)")
+    print0("=" * 60)
+
+    model.eval()
+    samples_shown = 0
+
+    with torch.no_grad():
+        for batch in dataloader:
+            if samples_shown >= num_samples:
+                break
+
+            input_ids, attn, labels = [b.to(device) for b in batch]
+
+            # For each sample in batch
+            for i in range(min(input_ids.shape[0], num_samples - samples_shown)):
+                sample_input = input_ids[i:i+1]
+                sample_labels = labels[i]
+
+                # Find where the assistant response starts (first non-masked token)
+                non_masked = (sample_labels >= 0).nonzero(as_tuple=True)[0]
+                if len(non_masked) == 0:
+                    continue
+
+                prompt_end = int(non_masked[0].item())
+                prompt_tokens = sample_input[0, :prompt_end]
+                expected_tokens = sample_labels[prompt_end:]
+                expected_tokens = expected_tokens[expected_tokens >= 0]  # Remove padding
+
+                # Generate from model (greedy, 50 tokens max)
+                gen_input = prompt_tokens.unsqueeze(0)
+                generated = []
+                for _ in range(min(50, len(expected_tokens) + 10)):
+                    with cast_ctx():
+                        try:
+                            out = model(input_ids=gen_input)
+                            logits = out.logits[:, -1, :]
+                        except (TypeError, AttributeError):
+                            logits = model(idx=gen_input)
+                            if isinstance(logits, dict):
+                                logits = logits.get("logits", logits)
+                            if hasattr(logits, "shape") and len(logits.shape) == 3:
+                                logits = logits[:, -1, :]
+                    next_token = logits.argmax(dim=-1)
+                    generated.append(next_token.item())
+                    gen_input = torch.cat([gen_input, next_token.unsqueeze(0)], dim=1)
+                    # Stop on EOS or assistant_end token
+                    if next_token.item() in [tokenizer.encode_special("<|assistant_end|>"), 0]:
+                        break
+
+                # Decode for display
+                prompt_text = tokenizer.decode(prompt_tokens.tolist())
+                expected_text = tokenizer.decode(expected_tokens.tolist()) if len(expected_tokens) > 0 else "(empty)"
+                generated_text = tokenizer.decode(generated) if generated else "(empty)"
+
+                # Truncate for display
+                max_display = 200
+                if len(prompt_text) > max_display:
+                    prompt_text = prompt_text[:max_display] + "..."
+
+                print0(f"\n--- Sample {samples_shown + 1} ---")
+                print0(f"Prompt: {prompt_text}")
+                print0(f"Expected: {expected_text[:100]}{'...' if len(expected_text) > 100 else ''}")
+                print0(f"Generated: {generated_text[:100]}{'...' if len(generated_text) > 100 else ''}")
+
+                samples_shown += 1
+                if samples_shown >= num_samples:
+                    break
+
+    print0("=" * 60)
+    model.train()
+    return samples_shown
+
+
 def build_grids(results: List[RunResult], resolution: int):
     """Construct convergence, loss, and intensity grids."""
     fractal_grid = np.zeros((resolution, resolution))
@@ -788,6 +865,40 @@ def train_once(
         def cast_ctx():
             return nullcontext()
 
+    # Diagnostic: compute initial loss before any training
+    if master:
+        print0("=" * 60)
+        print0("DIAGNOSTIC: Initial state before training")
+        print0("=" * 60)
+        model.eval()
+        with torch.no_grad():
+            diag_batch = next(iter(dataloader))
+            diag_input, diag_attn, diag_labels = [b.to(device) for b in diag_batch]
+            with cast_ctx():
+                try:
+                    out = model(input_ids=diag_input, attention_mask=diag_attn, labels=diag_labels)
+                    init_loss = out.loss.item()
+                except TypeError:
+                    out = model(idx=diag_input, targets=diag_labels)
+                    init_loss = out["loss"].item() if isinstance(out, dict) else out.item()
+            # Token statistics
+            total_tokens = diag_labels.numel()
+            trained_tokens = int((diag_labels >= 0).sum().item())
+            masked_tokens = total_tokens - trained_tokens
+            print0(f"Initial loss (before training): {init_loss:.4f}")
+            print0(f"Batch shape: {diag_input.shape}")
+            print0(f"Total tokens in batch: {total_tokens}")
+            print0(f"Trained tokens (non-masked): {trained_tokens} ({100*trained_tokens/total_tokens:.1f}%)")
+            print0(f"Masked tokens: {masked_tokens} ({100*masked_tokens/total_tokens:.1f}%)")
+            wb.log({"diagnostic/initial_loss": init_loss, "diagnostic/trained_token_pct": 100*trained_tokens/total_tokens})
+        model.train()
+        print0("=" * 60)
+
+    # Visualization: show predictions before training
+    if master and visualize:
+        val_loader = build_dataloader(tokenizer, seed=run_seed + 999, world_size=1, rank=0, split="validation")
+        visualize_predictions(model, tokenizer, val_loader, device, cast_ctx, num_samples=3, stage="before")
+
     try:
         for step_idx in range(total_steps):
             optim.zero_grad(set_to_none=True)
@@ -860,8 +971,12 @@ def train_once(
                             break
                         v_input, v_attn, v_labels = v_input.to(device), v_attn.to(device), v_labels.to(device)
                         with cast_ctx():
-                            out = model(input_ids=v_input, attention_mask=v_attn, labels=v_labels)
-                            v_loss = out.loss
+                            try:
+                                out = model(input_ids=v_input, attention_mask=v_attn, labels=v_labels)
+                                v_loss = out.loss
+                            except TypeError:
+                                out = model(idx=v_input, targets=v_labels)
+                                v_loss = out["loss"] if isinstance(out, dict) else out
                         val_losses.append(v_loss.item())
                 if val_losses:
                     val_loss_mean = float(np.mean(val_losses))
@@ -876,6 +991,11 @@ def train_once(
     runtime_s = time.time() - start_time
     converged = error is None and math.isfinite(final_loss) and final_loss < convergence_loss_threshold
     avg_loss = float(np.mean(losses)) if losses else float("inf")
+
+    # Visualization: show predictions after training
+    if master and visualize:
+        val_loader = build_dataloader(tokenizer, seed=run_seed + 999, world_size=1, rank=0, split="validation")
+        visualize_predictions(model, tokenizer, val_loader, device, cast_ctx, num_samples=3, stage="after")
 
     # Save checkpoint and upload artifact (single runs only, not grid)
     if master and save_artifacts and not grid:

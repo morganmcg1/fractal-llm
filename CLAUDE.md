@@ -90,7 +90,7 @@ devpod provider add kubernetes --name kubernetes-crwv \
 - **Volume**: `fractal-llm-results` for persistent storage
 - **Image**: `nvidia/cuda:12.8.0-devel-ubuntu22.04` (Torch 2.8.0+cu128 via uv pip; rich + python-dotenv included)
 - **Model code**: vendored `third_party/nanochat` (commit `8f979a8bdab491c4c152ce5c87f90c2ec31d0845`, 2025-12-28). Keep this copy in sync if you update upstream. Commit info lives in `third_party/nanochat/COMMIT_INFO.txt`.
-- **Model artifact**: nanochat-d20 (561M) from W&B artifact `morgan/fractal-llm/nanochat-d20-speedrun:latest`
+- **Model artifact**: nanochat-d20 (561M) from W&B artifact `morgy/fractal-llm/nanochat-fin-rl-artifact:v7`
 
 **Commands:**
 ```bash
@@ -123,7 +123,7 @@ MODAL_ENVIRONMENT=fractal-llm uv run modal run --detach src/nanochat_modal.py \
 
 # Local finetune using a specific W&B artifact (no Modal; torchrun on 1–8 GPUs)
 torchrun --standalone --nproc_per_node=1 -m src.finetune \
-  --model_id="wandb:morgan/fractal-llm/nanochat-d20-20251230-r3-sft-artifact:v0" \
+  --model_id="wandb:morgy/fractal-llm/nanochat-fin-rl-artifact:v7" \
   --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0
 
 # Smoke test (fast, validates logging + artifact in a single run)
