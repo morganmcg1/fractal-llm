@@ -707,10 +707,12 @@ def train_once(
     if (grid or grid_i != 0 or grid_j != 0) and run:
         run_name = f"{run}-g{grid_i}-{grid_j}"
 
-    # Build tags list from wandb_tags + grid_sweep_id
-    run_tags = [t.strip() for t in wandb_tags.split(",") if t.strip()]
+    # Build tags list from wandb_tags + grid_sweep_id; always include base "finetune" tag
+    user_tags = [t.strip() for t in wandb_tags.split(",") if t.strip()]
+    if not any(t.lower() == "finetune" for t in user_tags):
+        user_tags.append("finetune")
     sweep_id = grid_sweep_id or datetime.now().strftime("%Y-%m-%d_%H-%M")
-    run_tags.append(sweep_id)
+    run_tags = list(dict.fromkeys(user_tags + [sweep_id]))  # preserve order, de-dup
 
     wb = (
         DummyWandb()
@@ -1030,12 +1032,13 @@ def run_grid_search():
         print0(f"Fractal dimension: {fractal['fractal_dimension']:.3f}")
 
         if run != "dummy":
+            summary_tags = ["fractal-grid", "finetune"]
             summary_run = wandb.init(
                 project=WANDB_PROJECT,
                 entity=WANDB_ENTITY,
                 name=f"{run}-grid-summary",
                 config=config_dump | {"fractal_dimension": fractal["fractal_dimension"]},
-                tags=["fractal-grid"],
+                tags=summary_tags,
             )
 
             summary_run.log(
