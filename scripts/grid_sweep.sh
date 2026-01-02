@@ -17,7 +17,7 @@ LOG_DIR=${LOG_DIR:-results/grid_logs/${RUN_PREFIX}}
 MODEL_ID=${MODEL_ID:-${MODEL_ARTIFACT:-}}
 DATASET_ID=${DATASET_ID:-}
 DATASET_REVISION=${DATASET_REVISION:-}
-MAX_SEQ_LEN=${MAX_SEQ_LEN:-256}
+MAX_SEQ_LEN=${MAX_SEQ_LEN:-1024}
 TOKENS_PER_RUN=${TOKENS_PER_RUN:-}  # optional override: fixed tokens instead of TOK_MIN..MAX grid
 LR_FIXED=${LR_FIXED:-}              # optional override: fixed LR instead of LR_MIN..MAX grid
 

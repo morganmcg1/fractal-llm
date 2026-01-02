@@ -37,7 +37,7 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    DATASET_ID=morgan/docvqa-nanochat \
    # optional: pin HF commit
    DATASET_REVISION=main \
-   MAX_SEQ_LEN=256 \
+   MAX_SEQ_LEN=1024 \
    HF_DATASETS_OFFLINE=1 \
    ./scripts/grid_sweep.sh
    ```
