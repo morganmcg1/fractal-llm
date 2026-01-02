@@ -1,31 +1,42 @@
 #!/usr/bin/env bash
 # Parallel single-GPU grid sweep launcher for fractal LR×tokens grids.
-# Distributes grid points across available GPUs (round-robin, bounded concurrency),
-# logs per-run output, and summarizes final losses.
+# One worker per GPU runs its assigned points sequentially (no GPU oversubscription).
+# Logs per-run output and summarizes final losses.
 
 set -euo pipefail
 [[ ${DEBUG_GRID:-0} -eq 1 ]] && set -x
 
-RUN_PREFIX=${RUN_PREFIX:-grid}
+RUN_PREFIX=${RUN_PREFIX:-grid-$(date +%Y%m%d_%H%M%S)}
+WANDB_RUN_PREFIX=${WANDB_RUN_PREFIX:-}
+if [[ -n "${WANDB_RUN_PREFIX}" ]]; then
+  RUN_PREFIX="${WANDB_RUN_PREFIX}"
+fi
+GRID_SWEEP_ID=${GRID_SWEEP_ID:-${RUN_PREFIX}}  # constant tag across all points in this sweep
 RES=${RES:-4}                 # grid resolution per axis (RES x RES points)
 LR_MIN=${LR_MIN:-1e-5}
 LR_MAX=${LR_MAX:-1e-3}
 TOK_MIN=${TOK_MIN:-5e3}
 TOK_MAX=${TOK_MAX:-5e5}
 GPUS=(${GPUS:-0 1 2 3 4 5 6 7})
-LOG_DIR=${LOG_DIR:-results/grid_logs/${RUN_PREFIX}}
+FRACTAL_STORAGE_DIR=${FRACTAL_STORAGE_DIR:-/var/tmp/fractal-llm}
+LOG_DIR=${LOG_DIR:-${FRACTAL_STORAGE_DIR}/results/grid_logs/${RUN_PREFIX}}
 MODEL_ID=${MODEL_ID:-${MODEL_ARTIFACT:-}}
 DATASET_ID=${DATASET_ID:-}
 DATASET_REVISION=${DATASET_REVISION:-}
 MAX_SEQ_LEN=${MAX_SEQ_LEN:-1024}
 TOKENS_PER_RUN=${TOKENS_PER_RUN:-}  # optional override: fixed tokens instead of TOK_MIN..MAX grid
 LR_FIXED=${LR_FIXED:-}              # optional override: fixed LR instead of LR_MIN..MAX grid
+SEED=${SEED:-999}
+WANDB_PROJECT=${WANDB_PROJECT:-fractal-llm}
+WANDB_ENTITY=${WANDB_ENTITY:-morgy}
+FINETUNE_WANDB_TAGS=${FINETUNE_WANDB_TAGS:-fractal-grid}
 
 mkdir -p "${LOG_DIR}"
 echo "[grid] logging to ${LOG_DIR}"
+echo "[grid] W&B project=${WANDB_PROJECT} entity=${WANDB_ENTITY} tags=${FINETUNE_WANDB_TAGS} sweep_id=${GRID_SWEEP_ID}"
 
 # Build grid points
-mapfile -t GRID_POINTS < <(python - <<PY
+mapfile -t GRID_POINTS < <(uv run python - <<PY
 import numpy as np, os
 res = int(os.environ.get("RES", "4"))
 lr_fixed = os.environ.get("LR_FIXED")
@@ -59,50 +70,66 @@ extra_args=()
 [[ -n "${DATASET_ID}" ]] && extra_args+=(--dataset_id "${DATASET_ID}")
 [[ -n "${DATASET_REVISION}" ]] && extra_args+=(--dataset_revision "${DATASET_REVISION}")
 
-max_jobs=${#GPUS[@]}
-job_idx=0
-cmd_file=$(mktemp)
-trap 'st=$?; [[ ${DEBUG_GRID:-0} -eq 1 ]] && echo "[grid] exit status $st, cleaning ${cmd_file}"; rm -f "$cmd_file"' EXIT
+num_gpus=${#GPUS[@]}
+if [[ ${num_gpus} -eq 0 ]]; then
+  echo "[grid] No GPUs specified; set GPUS=\"0 1 2 ...\"" >&2
+  exit 2
+fi
 
-for point in "${GRID_POINTS[@]}"; do
-  [[ ${DEBUG_GRID:-0} -eq 1 ]] && echo "[grid] point ${job_idx}: ${point}"
-  IFS=',' read -r gi gj lr tok <<<"${point}"
-  gpu=${GPUS[$((job_idx % max_jobs))]}
-  log="${LOG_DIR}/run_${gi}_${gj}.log"
-  echo "[grid] GPU ${gpu} -> (${gi},${gj}) lr=${lr} tok=${tok} :: ${log}"
+echo "[grid] dispatching ${#GRID_POINTS[@]} points across ${num_gpus} GPU workers"
+pids=()
+for gpu_idx in "${!GPUS[@]}"; do
+  gpu=${GPUS[$gpu_idx]}
+  (
+    set +e
+    worker_rc=0
+    for ((point_idx=gpu_idx; point_idx<${#GRID_POINTS[@]}; point_idx+=num_gpus)); do
+      point=${GRID_POINTS[$point_idx]}
+      IFS=',' read -r gi gj lr tok <<<"${point}"
+      log="${LOG_DIR}/run_${gi}_${gj}.log"
+      echo "[grid] GPU ${gpu} -> (${gi},${gj}) lr=${lr} tok=${tok} :: ${log}"
 
-  cmd="CUDA_VISIBLE_DEVICES=${gpu} WANDB_MODE=disabled HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-0} \
-python -m src.finetune \
-  --run ${RUN_PREFIX}-g${gi}-${gj} \
-  --grid_i ${gi} \
-  --grid_j ${gj} \
-  --learning_rate ${lr} \
-  --num_tokens ${tok} \
-  --eval_every 0 \
-  --log_every 5 \
-  --save_artifacts False \
-  --deterministic True \
-  --max_seq_len ${MAX_SEQ_LEN}"
-
-  for arg in "${extra_args[@]}"; do
-    cmd+=" ${arg}"
-  done
-  cmd+=" >${log} 2>&1"
-  echo "${cmd}" >> "${cmd_file}"
-  ((job_idx += 1))
+      if ! (
+        CUDA_VISIBLE_DEVICES=${gpu} HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-0} \
+          FRACTAL_STORAGE_DIR=${FRACTAL_STORAGE_DIR} \
+          WANDB_PROJECT=${WANDB_PROJECT} WANDB_ENTITY=${WANDB_ENTITY} \
+          PYTHONUNBUFFERED=1 \
+          uv run python -m src.finetune \
+            --run "${RUN_PREFIX}" \
+            --grid_sweep_id "${GRID_SWEEP_ID}" \
+            --grid_i "${gi}" \
+            --grid_j "${gj}" \
+            --learning_rate "${lr}" \
+            --num_tokens "${tok}" \
+            --eval_every 0 \
+            --log_every 5 \
+            --save_artifacts False \
+            --deterministic True \
+            --seed "${SEED}" \
+            --max_seq_len "${MAX_SEQ_LEN}" \
+            --wandb_tags "${FINETUNE_WANDB_TAGS}" \
+            "${extra_args[@]}" \
+            2>&1 | tee "${log}"
+      ); then
+        echo "[grid] FAILED gpu=${gpu} point=(${gi},${gj}) log=${log}" >&2
+        worker_rc=1
+      fi
+    done
+    exit "${worker_rc}"
+  ) &
+  pids+=($!)
 done
-echo "[grid] built ${job_idx} commands at ${cmd_file}"
 
-# Run commands with bounded parallelism (one per GPU)
-echo "[grid] dispatching ${#GRID_POINTS[@]} commands with ${max_jobs} workers"
-set +e
-xargs -P "${max_jobs}" -I CMD bash -lc "CMD" < "${cmd_file}"
-rc=$?
-set -e
-echo "[grid] xargs exit code: ${rc}"
+rc=0
+for pid in "${pids[@]}"; do
+  if ! wait "${pid}"; then
+    rc=1
+  fi
+done
+echo "[grid] workers complete (rc=${rc})"
 
 # Summarize results
-python - <<PY
+uv run python - <<PY
 import json, pathlib, re
 log_dir = pathlib.Path("${LOG_DIR}")
 pattern = re.compile(r"Final: loss=([0-9.]+)")
@@ -118,4 +145,4 @@ if len(unique) == 1:
 else:
     print(f"[grid] Final losses varied across runs: {sorted(unique)}")
 PY
-exit ${rc:-0}
+exit ${rc}

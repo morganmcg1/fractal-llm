@@ -24,16 +24,17 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
      `torchrun --standalone --nproc_per_node=1 -m src.finetune --model_id="wandb:morgy/fractal-llm/nanochat-fin-rl-artifact:v7" --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0`
 
 ### Local Grid Sweep (parallel single-GPU)
-1) Cache model/tokenizer locally (e.g., `/workspaces/fractal-llm/results/model_cache/nanochat-d20-20251230-r3-sft-artifact_v0/checkpoints`). Cache DocVQA once, then set `HF_DATASETS_OFFLINE=1` for repeatable sweeps.
+1) Cache model/tokenizer locally (e.g., `${FRACTAL_STORAGE_DIR:-/var/tmp/fractal-llm}/results/model_cache/.../checkpoints`). Cache DocVQA once, then set `HF_DATASETS_OFFLINE=1` for repeatable sweeps.
 2) Select GPUs: `GPUS="0 1 2 3 4 5 6 7"` (one run per ID).
-3) Launch sweep with `scripts/grid_sweep.sh` (logs → `results/grid_logs/<RUN_PREFIX>/`):
+3) Launch sweep with `scripts/grid_sweep.sh` (logs → `${FRACTAL_STORAGE_DIR:-/var/tmp/fractal-llm}/results/grid_logs/<RUN_PREFIX>/`):
    ```bash
    RUN_PREFIX=grid-smoke \
+   FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm \
    GPUS="0 1 2 3 4 5 6 7" \
    RES=16 \
    LR_MIN=1e-5 LR_MAX=1e-3 \
    TOK_MIN=5e3 TOK_MAX=5e5 \
-   MODEL_ID=/workspaces/fractal-llm/results/model_cache/nanochat-d20-20251230-r3-sft-artifact_v0/checkpoints \
+   MODEL_ID=/var/tmp/fractal-llm/results/model_cache/nanochat-d20-20251230-r3-sft-artifact_v0/checkpoints \
    DATASET_ID=morgan/docvqa-nanochat \
    # optional: pin HF commit
    DATASET_REVISION=main \
@@ -41,15 +42,17 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    HF_DATASETS_OFFLINE=1 \
    ./scripts/grid_sweep.sh
    ```
-   - Overrides: `LR_FIXED` or `TOKENS_PER_RUN` lock LR/tokens instead of logspace; `RUN_PREFIX` names outputs; `LOG_DIR` changes destination.
-   - Output: per-point logs `run_<i>_<j>.log`; summary prints unique final losses (should match when deterministic).
+   - Overrides: `LR_FIXED` or `TOKENS_PER_RUN` lock LR/tokens instead of logspace; `GRID_SWEEP_ID` groups runs; `RUN_PREFIX` (or `WANDB_RUN_PREFIX`) names outputs; `LOG_DIR` changes destination.
+   - Output: per-point logs `run_<i>_<j>.log`; JSON summary prints the parsed final loss for each point.
+4) Probe the max per-GPU batch size for `src/finetune.py`:
+   `GPU=0 BS_START=8 BS_MAX=256 ./scripts/probe_batch_size.sh`
 
 
 ### NanoChat
 
 To run a full nanochat run, including RL, as well as artifact and tokenizer saving for each stage, run this:
 ```
-export NANOCHAT_BASE_DIR=/var/tmp/nanochat && WANDB_RUN=nanochat-fin WANDB_PROJECT=fractal-llm WANDB_ENTITY=morgan NPROC_PER_NODE=8 bash speedrun.sh
+export NANOCHAT_BASE_DIR=/var/tmp/nanochat && WANDB_RUN=nanochat-fin WANDB_PROJECT=fractal-llm WANDB_ENTITY=morgy NPROC_PER_NODE=8 bash speedrun.sh
 ```
 
 ### CoreWeave DevPod storage quota workaround (torch install)
@@ -164,11 +167,11 @@ kubectl get pods --all-namespaces --context cks-wb3 \
 **Change GPU count:** Delete provider and recreate with different `RESOURCES="limits.nvidia.com/gpu=N"` (see CLAUDE.md for details).
 
 ## Notes
-- W&B: entity `morgan`, project `fractal-llm`. Fractal sweeps load the model from W&B artifact `nanochat-d20-speedrun:latest`.
+- W&B: entity `morgy`, project `fractal-llm`. Fractal sweeps load the model from W&B artifact `nanochat-d20-speedrun:latest`.
 - Always enable W&B metric logging for all runs (do not use `WANDB_MODE=disabled` unless explicitly requested).
 - Modal training image: CUDA 12.8, torch 2.8.0+cu128, installs via `uv pip`; `python-dotenv` and `rich` included; flash-attn omitted.
 - Token budget per grid point is respected (`steps = ceil(tokens / (bs*seq_len))`).
-- WandB terminal UI (beta leet): inspect any run locally via `uv run wandb beta leet https://wandb.ai/morgan/fractal-llm/runs/<run_id>` (handy for Modal jobs).
+- WandB terminal UI (beta leet): inspect any run locally via `uv run wandb beta leet https://wandb.ai/morgy/fractal-llm/runs/<run_id>` (handy for Modal jobs).
 
 ## Reproducibility
 - Deterministic CUDA everywhere: `CUBLAS_WORKSPACE_CONFIG=:4096:8`, TF32 off, `torch.use_deterministic_algorithms(True)`, `torch.backends.cudnn.deterministic=True`, `torch.backends.cudnn.benchmark=False`, `TORCH_NUM_THREADS=1`, `CUDA_DEVICE_ORDER=PCI_BUS_ID`, and NCCL fixed (`NCCL_ALGO=Ring`, `NCCL_PROTO=Simple`, `NCCL_MIN_NRINGS=1`).

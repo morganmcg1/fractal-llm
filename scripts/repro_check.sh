@@ -7,6 +7,7 @@ WANDB_RUN_PREFIX=${WANDB_RUN_PREFIX:-}
 LR=${LR:-3e-4}
 TOKENS=${TOKENS:-5000}
 SEED=${SEED:-999}
+DEVICE_BATCH_SIZE=${DEVICE_BATCH_SIZE:-8}
 NGPUS=${NGPUS:-8}   # number of single-GPU jobs (assumes contiguous IDs starting at 0)
 FRACTAL_STORAGE_DIR=${FRACTAL_STORAGE_DIR:-/var/tmp/fractal-llm}
 LOG_DIR=${LOG_DIR:-${FRACTAL_STORAGE_DIR}/results/repro_logs/${RUN_PREFIX}}
@@ -22,6 +23,7 @@ fi
 mkdir -p "${LOG_DIR}"
 echo "[repro] logging to ${LOG_DIR}"
 echo "[repro] W&B project=${WANDB_PROJECT} entity=${WANDB_ENTITY}"
+echo "[repro] device_batch_size=${DEVICE_BATCH_SIZE}"
 
 extra_args=()
 if [[ -n "${MODEL_ID}" ]]; then
@@ -40,6 +42,7 @@ for gpu in $(seq 0 $((NGPUS - 1))); do
     PYTHONUNBUFFERED=1 \
     uv run python -m src.finetune \
       --run "${RUN_PREFIX}-g${gpu}" \
+      --device_batch_size "${DEVICE_BATCH_SIZE}" \
       --learning_rate "${LR}" \
       --num_tokens "${TOKENS}" \
       --eval_every 5 \

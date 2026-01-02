@@ -1372,7 +1372,9 @@ def main():
                 json.dump({"config": user_config, "result": asdict(res), "repro": repro}, f, indent=2)
             print0(f"Saved results: {results_path}")
 
-        exit_code = 1 if res.error is not None else 0
+        # Treat non-finite loss as an expected "diverged" outcome for sweep grids.
+        # Only crash the process for unexpected exceptions (e.g., OOM).
+        exit_code = 1 if (res.error is not None and res.error != "non-finite loss detected") else 0
         if ddp and dist.is_available() and dist.is_initialized():
             # Sync failure across ranks so torchrun sees a consistent exit status.
             flag = torch.tensor(exit_code, device=device)
