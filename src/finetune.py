@@ -241,6 +241,8 @@ gradient_checkpointing = False
 source_stage = "sft"  # nanochat checkpoint family: base|mid|sft|rl
 tokenizer_artifact = os.environ.get("TOKENIZER_ARTIFACT", None)
 convergence_loss_threshold = 2.0  # consider run converged if final CE below this and finite
+wandb_tags = "finetune"  # comma-separated wandb tags (e.g., "finetune,debug")
+grid_sweep_id = ""  # sweep identifier tag; auto-generated as YYYY-MM-DD_HH-MM if empty
 
 # Grid search knobs
 grid = False
@@ -704,6 +706,12 @@ def train_once(
     run_name = run
     if (grid or grid_i != 0 or grid_j != 0) and run:
         run_name = f"{run}-g{grid_i}-{grid_j}"
+
+    # Build tags list from wandb_tags + grid_sweep_id
+    run_tags = [t.strip() for t in wandb_tags.split(",") if t.strip()]
+    sweep_id = grid_sweep_id or datetime.now().strftime("%Y-%m-%d_%H-%M")
+    run_tags.append(sweep_id)
+
     wb = (
         DummyWandb()
         if use_dummy
@@ -719,8 +727,9 @@ def train_once(
                 "grid_j": grid_j,
                 "run_seed": run_seed,
                 "repro": run_repro,
+                "grid_sweep_id": sweep_id,
             },
-            tags=["finetune"],
+            tags=run_tags,
             save_code=True,
             settings=wandb.Settings(init_timeout=300, _service_wait=300),
         )
