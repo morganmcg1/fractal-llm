@@ -910,6 +910,8 @@ def train_once(
     model.to(device)
     if ddp:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
+    if device_type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
 
     dataloader = build_dataloader(tokenizer, seed=seed, world_size=world_size, rank=rank)
     pad_token_id = tokenizer.encode_special("<|assistant_end|>")
@@ -985,8 +987,8 @@ def train_once(
             if before_data:
                 for row in before_data:
                     generations_table.add_data(*row)
-                wb.log({"samples/generations": generations_table})
-                print0(f"Logged {len(before_data)} validation sample predictions (before training) to wandb table")
+                wb.log({"samples/generations_incr": generations_table})
+                print0(f"Logged {len(before_data)} validation sample predictions (before training) to wandb table (incremental)")
                 print_generation_table(before_data, stage="before")
 
     # Diagnostic: compute initial loss before any training
@@ -1107,6 +1109,12 @@ def train_once(
     converged = error is None and math.isfinite(final_loss) and final_loss < convergence_loss_threshold
     avg_loss = float(np.mean(losses)) if losses else float("inf")
 
+    if device_type == "cuda" and master:
+        max_alloc_gb = torch.cuda.max_memory_allocated() / (1024**3)
+        max_reserved_gb = torch.cuda.max_memory_reserved() / (1024**3)
+        print0(f"[MEM] max_allocated_gb={max_alloc_gb:.2f} max_reserved_gb={max_reserved_gb:.2f}")
+        wb.log({"memory/max_allocated_gb": max_alloc_gb, "memory/max_reserved_gb": max_reserved_gb})
+
     # Generate predictions AFTER training on same baseline samples and log to wandb
     after_data = None
     if master and generations_table is not None and baseline_samples and not use_dummy:
@@ -1114,9 +1122,19 @@ def train_once(
         if after_data:
             for row in after_data:
                 generations_table.add_data(*row)
-            wb.log({"samples/generations": generations_table})
-            print0(f"Logged {len(after_data)} validation sample predictions (after training, step {total_steps}) to wandb table")
+            wb.log({"samples/generations_incr": generations_table})
+            print0(f"Logged {len(after_data)} validation sample predictions (after training, step {total_steps}) to wandb table (incremental)")
             print_generation_table(after_data, stage="after")
+
+    # Log a final immutable table for stable viewing in the W&B UI
+    if master and generations_table is not None and not use_dummy and generations_table.data:
+        final_table = wandb.Table(
+            columns=generations_table.columns,
+            data=generations_table.data,
+            log_mode="IMMUTABLE",
+        )
+        wb.log({"samples/generations": final_table})
+        print0(f"Logged final generations table with {len(generations_table.data)} rows to wandb")
 
     # Display: show predictions after training (fallback if no table data)
     if master and visualize and after_data is None:
@@ -1162,14 +1180,10 @@ def train_once(
             print0(f"Uploaded artifact: {artifact_name}")
 
     if master and not use_dummy:
-        wb.log(
-            {
-                "final/loss": final_loss,
-                "final/converged": converged,
-                "final/tokens_seen": tokens_seen,
-                "runtime_s": runtime_s,
-            }
-        )
+        wb.summary["final_train_loss"] = final_loss
+        wb.summary["converged"] = converged
+        wb.summary["tokens_seen"] = tokens_seen
+        wb.summary["runtime_s"] = runtime_s
         wb.finish()
 
     # cleanup
@@ -1339,6 +1353,7 @@ def main():
         device_type = autodetect_device_type()
         runtime = compute_init(device_type)
         runtime = runtime + (device_type,)
+        ddp, rank, local_rank, world_size, device, _device_type = runtime
         res = train_once(runtime=runtime, grid_i=grid_i, grid_j=grid_j)
         if int(os.environ.get("RANK", 0)) == 0:
             print0(f"\nFinal: loss={res.final_loss:.4f} tokens_seen={res.tokens_seen:,} converged={res.converged}")
@@ -1356,6 +1371,19 @@ def main():
             with open(results_path, "w", encoding="utf-8") as f:
                 json.dump({"config": user_config, "result": asdict(res), "repro": repro}, f, indent=2)
             print0(f"Saved results: {results_path}")
+
+        exit_code = 1 if res.error is not None else 0
+        if ddp and dist.is_available() and dist.is_initialized():
+            # Sync failure across ranks so torchrun sees a consistent exit status.
+            flag = torch.tensor(exit_code, device=device)
+            dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+            exit_code = int(flag.item())
+
+        compute_cleanup()
+        if exit_code != 0:
+            raise SystemExit(exit_code)
+        return
+
     compute_cleanup()
 
 
