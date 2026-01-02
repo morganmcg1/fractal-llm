@@ -5,13 +5,18 @@ set -euo pipefail
 RUN_PREFIX=${RUN_PREFIX:-repro-$(date +%Y%m%d_%H%M%S)}
 LR=${LR:-3e-4}
 TOKENS=${TOKENS:-2000}
+SEED=${SEED:-999}
 NGPUS=${NGPUS:-8}   # number of single-GPU jobs (assumes contiguous IDs starting at 0)
-LOG_DIR=${LOG_DIR:-results/repro_logs/${RUN_PREFIX}}
+FRACTAL_STORAGE_DIR=${FRACTAL_STORAGE_DIR:-/var/tmp/fractal-llm}
+LOG_DIR=${LOG_DIR:-${FRACTAL_STORAGE_DIR}/results/repro_logs/${RUN_PREFIX}}
 MODEL_ID=${MODEL_ID:-${MODEL_ARTIFACT:-}}
 DATASET_ID=${DATASET_ID:-}
+WANDB_PROJECT=${WANDB_PROJECT:-fractal-llm}
+WANDB_ENTITY=${WANDB_ENTITY:-morgy}
 
 mkdir -p "${LOG_DIR}"
 echo "[repro] logging to ${LOG_DIR}"
+echo "[repro] W&B project=${WANDB_PROJECT} entity=${WANDB_ENTITY}"
 
 extra_args=()
 if [[ -n "${MODEL_ID}" ]]; then
@@ -25,8 +30,9 @@ pids=()
 for gpu in $(seq 0 $((NGPUS - 1))); do
   log="${LOG_DIR}/run_${gpu}.log"
   echo "[repro] GPU ${gpu} -> ${log}"
-  CUDA_VISIBLE_DEVICES=${gpu} WANDB_MODE=disabled HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-0} \
-    python -m src.finetune \
+  CUDA_VISIBLE_DEVICES=${gpu} HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-0} \
+    WANDB_PROJECT=${WANDB_PROJECT} WANDB_ENTITY=${WANDB_ENTITY} \
+    uv run python -m src.finetune \
       --run "${RUN_PREFIX}-g${gpu}" \
       --learning_rate "${LR}" \
       --num_tokens "${TOKENS}" \
@@ -35,6 +41,7 @@ for gpu in $(seq 0 $((NGPUS - 1))); do
       --save_artifacts False \
       --debug False \
       --deterministic True \
+      --seed "${SEED}" \
       "${extra_args[@]}" \
       >"${log}" 2>&1 &
   pids+=($!)
@@ -46,7 +53,7 @@ for pid in "${pids[@]}"; do
 done
 
 # Verify losses match across GPUs
-python - <<PY
+uv run python - <<PY
 import json, pathlib, re, sys
 log_dir = pathlib.Path("${LOG_DIR}")
 pattern = re.compile(r"Final: loss=([0-9.]+)")
