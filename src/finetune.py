@@ -557,6 +557,85 @@ class RunResult:
 # ---------------------------------------------------------------------------
 # Visualization and analysis helpers
 
+def capture_baseline_samples(dataloader, device, num_samples: int = 5):
+    """Capture fixed samples for before/after comparison."""
+    samples = []
+    for batch in dataloader:
+        input_ids, attn, labels = [b.to(device) for b in batch]
+        for i in range(input_ids.shape[0]):
+            if len(samples) >= num_samples:
+                break
+            samples.append({
+                "input_ids": input_ids[i].clone(),
+                "attn": attn[i].clone(),
+                "labels": labels[i].clone(),
+            })
+        if len(samples) >= num_samples:
+            break
+    return samples
+
+
+def generate_sample_predictions(model, tokenizer, samples, device, cast_ctx, step: int):
+    """Generate predictions for fixed samples and return table data."""
+    model.eval()
+    table_data = []
+
+    with torch.no_grad():
+        for idx, sample in enumerate(samples):
+            input_ids = sample["input_ids"].unsqueeze(0)
+            labels = sample["labels"]
+
+            # Find where assistant response starts (first non-masked token)
+            non_masked = (labels >= 0).nonzero(as_tuple=True)[0]
+            if len(non_masked) == 0:
+                continue
+
+            prompt_end = int(non_masked[0].item())
+            prompt_tokens = input_ids[0, :prompt_end]
+            expected_tokens = labels[prompt_end:]
+            expected_tokens = expected_tokens[expected_tokens >= 0]
+
+            # Generate from model (greedy, up to 100 tokens)
+            gen_input = prompt_tokens.unsqueeze(0).to(device)
+            generated = []
+            max_gen_len = min(100, len(expected_tokens) + 20)
+            for _ in range(max_gen_len):
+                with cast_ctx():
+                    try:
+                        out = model(input_ids=gen_input)
+                        logits = out.logits[:, -1, :]
+                    except (TypeError, AttributeError):
+                        logits = model(idx=gen_input)
+                        if isinstance(logits, dict):
+                            logits = logits.get("logits", logits)
+                        if hasattr(logits, "shape") and len(logits.shape) == 3:
+                            logits = logits[:, -1, :]
+                next_token = logits.argmax(dim=-1)
+                generated.append(next_token.item())
+                gen_input = torch.cat([gen_input, next_token.unsqueeze(0)], dim=1)
+                # Stop on EOS or assistant_end token
+                if next_token.item() in [tokenizer.encode_special("<|assistant_end|>"), 0]:
+                    break
+
+            # Decode for table
+            prompt_text = tokenizer.decode(prompt_tokens.tolist())
+            expected_text = tokenizer.decode(expected_tokens.tolist()) if len(expected_tokens) > 0 else ""
+            generated_text = tokenizer.decode(generated) if generated else ""
+
+            # Truncate for display (wandb tables can handle longer text but keep reasonable)
+            max_len = 500
+            table_data.append([
+                step,
+                idx,
+                prompt_text[:max_len] + ("..." if len(prompt_text) > max_len else ""),
+                generated_text[:max_len] + ("..." if len(generated_text) > max_len else ""),
+                expected_text[:max_len] + ("..." if len(expected_text) > max_len else ""),
+            ])
+
+    model.train()
+    return table_data
+
+
 def visualize_predictions(model, tokenizer, dataloader, device, cast_ctx, num_samples: int = 3, stage: str = "before"):
     """Generate and display model predictions on validation samples."""
     print0("=" * 60)
@@ -900,6 +979,27 @@ def train_once(
         def cast_ctx():
             return nullcontext()
 
+    # Capture baseline samples for before/after comparison (use training data)
+    baseline_samples = []
+    generations_table = None
+    if master:
+        baseline_loader = build_dataloader(tokenizer, seed=run_seed, world_size=1, rank=0, split="train")
+        baseline_samples = capture_baseline_samples(baseline_loader, device, num_samples=5)
+        print0(f"Captured {len(baseline_samples)} baseline samples for before/after comparison")
+
+        # Generate predictions BEFORE training and log to wandb
+        if baseline_samples and not use_dummy:
+            generations_table = wandb.Table(
+                columns=["step", "sample_idx", "prompt", "generated", "expected"],
+                log_mode="INCREMENTAL",
+            )
+            before_data = generate_sample_predictions(model, tokenizer, baseline_samples, device, cast_ctx, step=0)
+            if before_data:
+                for row in before_data:
+                    generations_table.add_data(*row)
+                wb.log({"samples/generations": generations_table})
+                print0(f"Logged {len(before_data)} sample predictions (before training) to wandb table")
+
     # Diagnostic: compute initial loss before any training
     if master:
         print0("=" * 60)
@@ -1031,6 +1131,15 @@ def train_once(
     if master and visualize:
         val_loader = build_dataloader(tokenizer, seed=run_seed + 999, world_size=1, rank=0, split="validation")
         visualize_predictions(model, tokenizer, val_loader, device, cast_ctx, num_samples=3, stage="after")
+
+    # Generate predictions AFTER training on same baseline samples and log to wandb
+    if master and generations_table is not None and baseline_samples and not use_dummy:
+        after_data = generate_sample_predictions(model, tokenizer, baseline_samples, device, cast_ctx, step=total_steps)
+        if after_data:
+            for row in after_data:
+                generations_table.add_data(*row)
+            wb.log({"samples/generations": generations_table})
+            print0(f"Logged {len(after_data)} sample predictions (after training, step {total_steps}) to wandb table")
 
     # Save checkpoint and upload artifact (single runs only, not grid)
     if master and save_artifacts and not grid:
