@@ -7,7 +7,7 @@ WANDB_RUN_PREFIX=${WANDB_RUN_PREFIX:-}
 LR=${LR:-3e-4}
 TOKENS=${TOKENS:-5000}
 SEED=${SEED:-999}
-DEVICE_BATCH_SIZE=${DEVICE_BATCH_SIZE:-}
+DEVICE_BATCH_SIZE=${DEVICE_BATCH_SIZE:-8}
 NGPUS=${NGPUS:-8}   # number of single-GPU jobs (assumes contiguous IDs starting at 0)
 FRACTAL_STORAGE_DIR=${FRACTAL_STORAGE_DIR:-/var/tmp/fractal-llm}
 LOG_DIR=${LOG_DIR:-${FRACTAL_STORAGE_DIR}/results/repro_logs/${RUN_PREFIX}}
@@ -23,11 +23,7 @@ fi
 mkdir -p "${LOG_DIR}"
 echo "[repro] logging to ${LOG_DIR}"
 echo "[repro] W&B project=${WANDB_PROJECT} entity=${WANDB_ENTITY}"
-if [[ -n "${DEVICE_BATCH_SIZE}" ]]; then
-  echo "[repro] device_batch_size=${DEVICE_BATCH_SIZE}"
-else
-  echo "[repro] device_batch_size=(finetune default)"
-fi
+echo "[repro] device_batch_size=${DEVICE_BATCH_SIZE}"
 
 extra_args=()
 if [[ -n "${MODEL_ID}" ]]; then
@@ -41,16 +37,12 @@ pids=()
 for gpu in $(seq 0 $((NGPUS - 1))); do
   log="${LOG_DIR}/run_${gpu}.log"
   echo "[repro] GPU ${gpu} -> ${log}"
-  batch_args=()
-  if [[ -n "${DEVICE_BATCH_SIZE}" ]]; then
-    batch_args+=(--device_batch_size "${DEVICE_BATCH_SIZE}")
-  fi
   CUDA_VISIBLE_DEVICES=${gpu} HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-0} \
     WANDB_PROJECT=${WANDB_PROJECT} WANDB_ENTITY=${WANDB_ENTITY} \
     PYTHONUNBUFFERED=1 \
     uv run python -m src.finetune \
       --run "${RUN_PREFIX}-g${gpu}" \
-      "${batch_args[@]}" \
+      --device_batch_size "${DEVICE_BATCH_SIZE}" \
       --learning_rate "${LR}" \
       --num_tokens "${TOKENS}" \
       --eval_every 5 \
