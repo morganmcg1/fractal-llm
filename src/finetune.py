@@ -254,7 +254,7 @@ model_id = os.environ.get("MODEL_ARTIFACT", "morgy/fractal-llm/nanochat-fin-rl-a
 dataset_id = os.environ.get("DATASET_ID", "morgan/docvqa-nanochat")
 dataset_revision = os.environ.get("DATASET_REVISION", None)
 max_seq_len = int(os.environ.get("MAX_SEQ_LEN", "1024"))  # nanochat default=2048, DocVQA avg ~400 tokens
-dtype = "float32"  # float32 | bfloat16 | float16 (bfloat16 matches model weights)
+dtype = "bfloat16"  # float32 | bfloat16 | float16 (bfloat16 matches model weights)
 device_batch_size = 8  # aim for the largest batch that fits; override via CLI/ENV if needed
 # Set 0 to force grad_accum_steps=1; otherwise acts as a target effective batch size.
 target_examples_per_step = 0
