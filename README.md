@@ -177,3 +177,6 @@ kubectl get pods --all-namespaces --context cks-wb3 \
 - GPU scaling: For fractal grids, prefer 8 independent single-GPU jobs (one per H200) for maximum throughput and bitwise repeatability. DDP paths keep identical initial weights across ranks; NCCL topology is pinned to ring for stable reductions.
 - Test harness: `./scripts/repro_check.sh` launches 8 single-GPU smoke trainings and asserts identical final losses across GPUs. Example:  
   `RUN_PREFIX=repro-smoke TOKENS=2000 HF_DATASETS_OFFLINE=0 ./scripts/repro_check.sh`
+- Run the repro script in a tmux session on the devpod (from local machine):  
+  `ssh fractal-llm.devpod 'bash -lc "cd /workspaces/fractal-llm && source .env && tmux new-session -d -s repro_check \"./scripts/repro_check.sh\" && tmux ls"'`  
+  Attach with: `ssh -t fractal-llm.devpod 'tmux attach -t repro_check'`

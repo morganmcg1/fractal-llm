@@ -3,8 +3,9 @@
 set -euo pipefail
 
 RUN_PREFIX=${RUN_PREFIX:-repro-$(date +%Y%m%d_%H%M%S)}
+WANDB_RUN_PREFIX=${WANDB_RUN_PREFIX:-}
 LR=${LR:-3e-4}
-TOKENS=${TOKENS:-2000}
+TOKENS=${TOKENS:-5000}
 SEED=${SEED:-999}
 NGPUS=${NGPUS:-8}   # number of single-GPU jobs (assumes contiguous IDs starting at 0)
 FRACTAL_STORAGE_DIR=${FRACTAL_STORAGE_DIR:-/var/tmp/fractal-llm}
@@ -13,6 +14,10 @@ MODEL_ID=${MODEL_ID:-${MODEL_ARTIFACT:-}}
 DATASET_ID=${DATASET_ID:-}
 WANDB_PROJECT=${WANDB_PROJECT:-fractal-llm}
 WANDB_ENTITY=${WANDB_ENTITY:-morgy}
+
+if [[ -n "${WANDB_RUN_PREFIX}" ]]; then
+  RUN_PREFIX="${WANDB_RUN_PREFIX}"
+fi
 
 mkdir -p "${LOG_DIR}"
 echo "[repro] logging to ${LOG_DIR}"
@@ -36,8 +41,8 @@ for gpu in $(seq 0 $((NGPUS - 1))); do
       --run "${RUN_PREFIX}-g${gpu}" \
       --learning_rate "${LR}" \
       --num_tokens "${TOKENS}" \
-      --eval_every 0 \
-      --log_every 5 \
+      --eval_every 5 \
+      --log_every 1 \
       --save_artifacts False \
       --debug False \
       --deterministic True \

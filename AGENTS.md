@@ -70,6 +70,15 @@ kubectl top nodes --context cks-wb3
 kubectl get pods --all-namespaces --context cks-wb3 -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,GPU:.spec.containers[*].resources.limits.nvidia\.com/gpu' | grep -v "<none>"
 ```
 
+**Repro script in tmux (from local machine):**
+```bash
+ssh fractal-llm.devpod 'bash -lc "cd /workspaces/fractal-llm && source .env && tmux new-session -d -s repro_check \"./scripts/repro_check.sh\" && tmux ls"'
+```
+Attach to the session:
+```bash
+ssh -t fractal-llm.devpod 'tmux attach -t repro_check'
+```
+
 **Changing GPU count:**
 ```bash
 # Delete provider and recreate with new GPU count
