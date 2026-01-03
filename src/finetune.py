@@ -282,6 +282,10 @@ embedding_lr = -1.0
 unembedding_lr = -1.0
 embedding_lr_mult = 10.0
 unembedding_lr_mult = 0.2
+# Parameter groups to train (comma-separated): matrix, embedding, unembedding.
+# Aliases: head/lm_head -> unembedding; wte/emb -> embedding; blocks -> matrix; "all"/"none" supported.
+# Default freezes embeddings to reduce optimizer state + improve stability on small-token runs.
+trainable_param_groups = "matrix,unembedding"
 
 # Note: With nanochat optimizers, weight decay applies only to the AdamW groups
 # (embeddings + unembedding), not the Muon matrix parameters.
@@ -636,6 +640,64 @@ def load_model_and_tok(device_type: str):
     if gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
     return model, tokenizer
+
+
+def parse_trainable_param_groups(spec: str) -> set[str]:
+    allowed = {"matrix", "embedding", "unembedding"}
+    aliases = {
+        "*": "all",
+        "all": "all",
+        "none": "none",
+        "": "none",
+        "head": "unembedding",
+        "lm_head": "unembedding",
+        "unembed": "unembedding",
+        "embed": "embedding",
+        "emb": "embedding",
+        "wte": "embedding",
+        "blocks": "matrix",
+        "trunk": "matrix",
+    }
+    norm = (spec or "").strip().lower()
+    norm = aliases.get(norm, norm)
+    if norm == "all":
+        return set(allowed)
+    if norm == "none":
+        return set()
+    parts = [aliases.get(p.strip().lower(), p.strip().lower()) for p in norm.split(",") if p.strip()]
+    groups = set(parts)
+    unknown = groups - allowed
+    if unknown:
+        raise ValueError(f"Unknown trainable_param_groups: {sorted(unknown)} (allowed: {sorted(allowed)})")
+    return groups
+
+
+def apply_trainable_param_groups(model, trainable_groups: set[str]) -> dict[str, int]:
+    """Set requires_grad for nanochat GPT parameter groups and return param counts."""
+    if not (hasattr(model, "transformer") and hasattr(model, "lm_head")):
+        raise AttributeError(f"Expected nanochat GPT with transformer + lm_head, got {type(model)}")
+    if not (hasattr(model.transformer, "h") and hasattr(model.transformer, "wte")):
+        raise AttributeError(f"Expected nanochat GPT with transformer.h + transformer.wte, got {type(model)}")
+
+    def _set_requires_grad(module, enabled: bool):
+        for p in module.parameters():
+            p.requires_grad = enabled
+
+    train_matrix = "matrix" in trainable_groups
+    train_embedding = "embedding" in trainable_groups
+    train_unembedding = "unembedding" in trainable_groups
+
+    _set_requires_grad(model.transformer.h, train_matrix)
+    _set_requires_grad(model.transformer.wte, train_embedding)
+    _set_requires_grad(model.lm_head, train_unembedding)
+
+    counts = {}
+    counts["total"] = sum(p.numel() for p in model.parameters())
+    counts["trainable"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    counts["matrix"] = sum(p.numel() for p in model.transformer.h.parameters() if p.requires_grad)
+    counts["embedding"] = sum(p.numel() for p in model.transformer.wte.parameters() if p.requires_grad)
+    counts["unembedding"] = sum(p.numel() for p in model.lm_head.parameters() if p.requires_grad)
+    return counts
 
 
 # ---------------------------------------------------------------------------
@@ -1024,10 +1086,16 @@ def train_once(
     eff_matrix_lr = float(matrix_lr) if matrix_lr > 0 else lr
     eff_embedding_lr = float(embedding_lr) if embedding_lr > 0 else eff_matrix_lr * float(embedding_lr_mult)
     eff_unembedding_lr = float(unembedding_lr) if unembedding_lr > 0 else eff_matrix_lr * float(unembedding_lr_mult)
-    if eff_matrix_lr <= 0 or eff_embedding_lr <= 0 or eff_unembedding_lr <= 0:
+    trainable_groups = parse_trainable_param_groups(trainable_param_groups)
+    bad_lr = (
+        ("matrix" in trainable_groups and eff_matrix_lr <= 0)
+        or ("embedding" in trainable_groups and eff_embedding_lr <= 0)
+        or ("unembedding" in trainable_groups and eff_unembedding_lr <= 0)
+    )
+    if bad_lr:
         raise ValueError(
-            f"Non-positive learning rates: matrix_lr={eff_matrix_lr} embedding_lr={eff_embedding_lr} "
-            f"unembedding_lr={eff_unembedding_lr}"
+            f"Non-positive learning rates for enabled groups: matrix_lr={eff_matrix_lr} embedding_lr={eff_embedding_lr} "
+            f"unembedding_lr={eff_unembedding_lr} (trainable_param_groups={trainable_param_groups!r})"
         )
 
     wb = (
@@ -1049,6 +1117,7 @@ def train_once(
                 "matrix_lr": eff_matrix_lr,
                 "embedding_lr": eff_embedding_lr,
                 "unembedding_lr": eff_unembedding_lr,
+                "trainable_groups": ",".join(sorted(trainable_groups)),
                 # Multi-devpod identification (top-level for easy W&B filtering)
                 "hostname": run_repro.get("hostname"),
                 "devpod_name": run_repro.get("devpod_name"),
@@ -1073,6 +1142,23 @@ def train_once(
     if dtype == "float32":
         model = model.float()
     model.to(device)
+    param_counts = apply_trainable_param_groups(model, trainable_groups)
+    if master:
+        print0(
+            f"[PARAMS] trainable_param_groups={trainable_param_groups!r} "
+            f"trainable={param_counts['trainable']:,}/{param_counts['total']:,} "
+            f"(matrix={param_counts['matrix']:,} emb={param_counts['embedding']:,} unemb={param_counts['unembedding']:,})"
+        )
+    wb_log(
+        {
+            "model/params_total": int(param_counts["total"]),
+            "model/params_trainable": int(param_counts["trainable"]),
+            "model/params_trainable_matrix": int(param_counts["matrix"]),
+            "model/params_trainable_embedding": int(param_counts["embedding"]),
+            "model/params_trainable_unembedding": int(param_counts["unembedding"]),
+        },
+        step=global_step,
+    )
     if device_type == "cuda":
         torch.cuda.reset_peak_memory_stats()
 
@@ -1114,10 +1200,17 @@ def train_once(
         matrix_lr=eff_matrix_lr,
         weight_decay=weight_decay,
     )
+    # DistAdamW/DistMuon assume all params they see have grads, so strip frozen params from each group.
+    for opt in optimizers:
+        for group in opt.param_groups:
+            group["params"] = [p for p in group["params"] if p.requires_grad]
     for opt in optimizers:
         for group in opt.param_groups:
             group["lr"] = group["lr"] * init_lr_frac
             group["initial_lr"] = group["lr"]
+            if len(group["params"]) == 0:
+                group["lr"] = 0.0
+                group["initial_lr"] = 0.0
 
     def lr_mult(step_idx: int) -> float:
         # linear warmup

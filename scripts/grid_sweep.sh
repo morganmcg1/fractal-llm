@@ -35,6 +35,7 @@ SEED=${SEED:-999}
 WANDB_PROJECT=${WANDB_PROJECT:-fractal-llm}
 WANDB_ENTITY=${WANDB_ENTITY:-morgy}
 FINETUNE_WANDB_TAGS=${FINETUNE_WANDB_TAGS:-fractal-grid}
+TRAINABLE_PARAM_GROUPS=${TRAINABLE_PARAM_GROUPS:-matrix,unembedding}  # passed to src.finetune --trainable_param_groups
 MAX_RETRIES=${MAX_RETRIES:-3}       # per-point retries for transient failures (total attempts = 1 + MAX_RETRIES)
 RETRY_BACKOFF_S=${RETRY_BACKOFF_S:-5}  # base backoff seconds (exponential-ish via multiplier)
 RETRY_PATTERNS=${RETRY_PATTERNS:-"ReadTimeout|Read timed out|ConnectionPool|ConnectionError|Temporary failure in name resolution|502|503|504"}
@@ -136,6 +137,7 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
       "$(_assign WANDB_PROJECT "${WANDB_PROJECT}")"
       "$(_assign WANDB_ENTITY "${WANDB_ENTITY}")"
       "$(_assign FINETUNE_WANDB_TAGS "${FINETUNE_WANDB_TAGS}")"
+      "$(_assign TRAINABLE_PARAM_GROUPS "${TRAINABLE_PARAM_GROUPS}")"
       "$(_assign MAX_RETRIES "${MAX_RETRIES}")"
       "$(_assign RETRY_BACKOFF_S "${RETRY_BACKOFF_S}")"
       "$(_assign RETRY_PATTERNS "${RETRY_PATTERNS}")"
@@ -409,6 +411,7 @@ for gpu_idx in "${!GPU_IDS[@]}"; do
             --seed "${SEED}" \
             --max_seq_len "${MAX_SEQ_LEN}" \
             --wandb_tags "${FINETUNE_WANDB_TAGS}" \
+            --trainable_param_groups "${TRAINABLE_PARAM_GROUPS}" \
             "${extra_args[@]}" \
             2>&1 | tee "${attempt_log}"
         cmd_rc=${PIPESTATUS[0]}
