@@ -39,6 +39,183 @@ MAX_RETRIES=${MAX_RETRIES:-3}       # per-point retries for transient failures (
 RETRY_BACKOFF_S=${RETRY_BACKOFF_S:-5}  # base backoff seconds (exponential-ish via multiplier)
 RETRY_PATTERNS=${RETRY_PATTERNS:-"ReadTimeout|Read timed out|ConnectionPool|ConnectionError|Temporary failure in name resolution|502|503|504"}
 SKIP_COMPLETED=${SKIP_COMPLETED:-1} # if 1, skip points whose log already contains a Final: line
+LOG_SUMMARY=${LOG_SUMMARY:-1}       # if 1, log a W&B grid-summary run at the end (single-pod/local only by default)
+
+# Multi-devpod orchestration (run this script locally with DEVPODS set).
+# Example:
+#   DEVPODS="fractal-llm-1 fractal-llm-2 fractal-llm-3" RES=16 TOKENS_PER_RUN=250000 \
+#   SWEEP_AXES=matrix_unembedding MATRIX_LR_MIN=1e-4 MATRIX_LR_MAX=3e-2 \
+#   UNEMBEDDING_LR_MIN=2e-5 UNEMBEDDING_LR_MAX=6e-3 \
+#   ./scripts/grid_sweep.sh
+DEVPODS_STR=${DEVPODS:-}            # space/comma-separated devpod workspace names (e.g., "fractal-llm-1 fractal-llm-2")
+GRID_SWEEP_ROLE=${GRID_SWEEP_ROLE:-}  # orchestrator|worker (internal)
+POD_INDEX=${POD_INDEX:-0}           # worker pod shard index in [0, NUM_PODS)
+NUM_PODS=${NUM_PODS:-1}             # number of pods participating in the sweep
+DEVPOD_NAME=${DEVPOD_NAME:-}        # optional label for logs/tags
+DEVPOD_WORKDIR=${DEVPOD_WORKDIR:-/workspaces/fractal-llm}
+DEVPOD_TMUX_SESSION=${DEVPOD_TMUX_SESSION:-grid_${RUN_PREFIX}}
+AUTO_PULL=${AUTO_PULL:-1}           # if 1, run git pull --ff-only on each devpod before starting
+AUTO_UV_SYNC=${AUTO_UV_SYNC:-1}     # if 1, run uv sync --frozen on each devpod before starting
+WAIT_FOR_COMPLETION=${WAIT_FOR_COMPLETION:-0}  # if 1, wait for all devpod tmux sessions to exit
+POLL_INTERVAL_S=${POLL_INTERVAL_S:-30}
+COLLECT_LOGS=${COLLECT_LOGS:-0}     # if 1, stream logs back to local LOG_DIR after completion
+SUMMARY_AFTER_COLLECT=${SUMMARY_AFTER_COLLECT:-0}  # if 1, run grid_sweep_summary locally after collecting logs
+
+_quote() { printf "%q" "$1"; }
+
+if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
+  if ! command -v devpod >/dev/null 2>&1; then
+    echo "[grid] DEVPODS is set but devpod CLI not found in PATH" >&2
+    exit 2
+  fi
+
+  # Normalize separators (commas -> spaces), then split.
+  DEVPODS_STR="${DEVPODS_STR//,/ }"
+  # shellcheck disable=SC2206
+  DEVPODS=(${DEVPODS_STR})
+  NUM_PODS=${#DEVPODS[@]}
+  if [[ "${NUM_PODS}" -le 0 ]]; then
+    echo "[grid] No devpods specified. Set DEVPODS=\"fractal-llm-1 fractal-llm-2 ...\"" >&2
+    exit 2
+  fi
+
+  echo "[grid] multi-devpod orchestrator mode"
+  echo "[grid] devpods: ${DEVPODS[*]}"
+  echo "[grid] sweep_axes=${SWEEP_AXES} res=${RES} tokens_per_run=${TOKENS_PER_RUN:-<grid>}"
+  echo "[grid] run_prefix=${RUN_PREFIX} sweep_id=${GRID_SWEEP_ID} tmux_session=${DEVPOD_TMUX_SESSION}"
+
+  # Launch a worker tmux session on each devpod.
+  pids=()
+  for pod_idx in "${!DEVPODS[@]}"; do
+    pod="${DEVPODS[$pod_idx]}"
+    echo "[grid] launching worker ${pod_idx}/${NUM_PODS} on devpod=${pod}"
+
+    # Build env assignments for the tmux command (shell-escaped).
+    env_assign=(
+      "GRID_SWEEP_ROLE=worker"
+      "DEVPODS="
+      "POD_INDEX=$(_quote "${pod_idx}")"
+      "NUM_PODS=$(_quote "${NUM_PODS}")"
+      "DEVPOD_NAME=$(_quote "${pod}")"
+      "DEVPOD_WORKDIR=$(_quote "${DEVPOD_WORKDIR}")"
+      "DEVPOD_TMUX_SESSION=$(_quote "${DEVPOD_TMUX_SESSION}")"
+      "RUN_PREFIX=$(_quote "${RUN_PREFIX}")"
+      "GRID_SWEEP_ID=$(_quote "${GRID_SWEEP_ID}")"
+      "SWEEP_AXES=$(_quote "${SWEEP_AXES}")"
+      "RES=$(_quote "${RES}")"
+      "LR_MIN=$(_quote "${LR_MIN}")"
+      "LR_MAX=$(_quote "${LR_MAX}")"
+      "TOK_MIN=$(_quote "${TOK_MIN}")"
+      "TOK_MAX=$(_quote "${TOK_MAX}")"
+      "MATRIX_LR_MIN=$(_quote "${MATRIX_LR_MIN}")"
+      "MATRIX_LR_MAX=$(_quote "${MATRIX_LR_MAX}")"
+      "UNEMBEDDING_LR_MIN=$(_quote "${UNEMBEDDING_LR_MIN}")"
+      "UNEMBEDDING_LR_MAX=$(_quote "${UNEMBEDDING_LR_MAX}")"
+      "FRACTAL_STORAGE_DIR=$(_quote "${FRACTAL_STORAGE_DIR}")"
+      "LOG_DIR=$(_quote "${LOG_DIR}")"
+      "MODEL_ID=$(_quote "${MODEL_ID}")"
+      "DATASET_ID=$(_quote "${DATASET_ID}")"
+      "DATASET_REVISION=$(_quote "${DATASET_REVISION}")"
+      "MAX_SEQ_LEN=$(_quote "${MAX_SEQ_LEN}")"
+      "TOKENS_PER_RUN=$(_quote "${TOKENS_PER_RUN}")"
+      "LR_FIXED=$(_quote "${LR_FIXED}")"
+      "SEED=$(_quote "${SEED}")"
+      "WANDB_PROJECT=$(_quote "${WANDB_PROJECT}")"
+      "WANDB_ENTITY=$(_quote "${WANDB_ENTITY}")"
+      "FINETUNE_WANDB_TAGS=$(_quote "${FINETUNE_WANDB_TAGS}")"
+      "MAX_RETRIES=$(_quote "${MAX_RETRIES}")"
+      "RETRY_BACKOFF_S=$(_quote "${RETRY_BACKOFF_S}")"
+      "RETRY_PATTERNS=$(_quote "${RETRY_PATTERNS}")"
+      "SKIP_COMPLETED=$(_quote "${SKIP_COMPLETED}")"
+      "LOG_SUMMARY=0"
+    )
+    tmux_cmd="${env_assign[*]} ./scripts/grid_sweep.sh"
+
+    devpod --silent ssh "${pod}" --command "bash -lc '
+      set -euo pipefail
+      cd ${DEVPOD_WORKDIR}
+      if [[ -f .env ]]; then source .env; fi
+      if [[ ${AUTO_PULL} -eq 1 ]]; then
+        git pull --ff-only || echo \"[grid] WARNING: git pull failed on ${pod}\"
+      fi
+      if [[ ${AUTO_UV_SYNC} -eq 1 ]]; then
+        uv sync --frozen || echo \"[grid] WARNING: uv sync failed on ${pod}\"
+      fi
+      if tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null; then
+        echo \"[grid] ERROR: tmux session already exists on ${pod}: ${DEVPOD_TMUX_SESSION}\" >&2
+        exit 3
+      fi
+      tmux new-session -d -s ${DEVPOD_TMUX_SESSION} -c ${DEVPOD_WORKDIR} \"${tmux_cmd}\"
+      echo \"[grid] started ${pod}: tmux attach -t ${DEVPOD_TMUX_SESSION}\"
+    '" &
+    pids+=($!)
+  done
+
+  for pid in "${pids[@]}"; do
+    wait "${pid}" || true
+  done
+
+  echo "[grid] all devpods launched"
+  echo "[grid] monitor:"
+  for pod in "${DEVPODS[@]}"; do
+    echo "  devpod ssh ${pod}   # then: tmux attach -t ${DEVPOD_TMUX_SESSION}"
+  done
+
+  if [[ "${WAIT_FOR_COMPLETION}" == "1" ]]; then
+    echo "[grid] waiting for completion (poll=${POLL_INTERVAL_S}s)"
+    while true; do
+      alive=0
+      for pod in "${DEVPODS[@]}"; do
+        if devpod --silent ssh "${pod}" --command "bash -lc 'tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null'"; then
+          alive=$((alive + 1))
+        fi
+      done
+      if [[ "${alive}" -eq 0 ]]; then
+        break
+      fi
+      echo "[grid] ${alive}/${NUM_PODS} devpods still running..."
+      sleep "${POLL_INTERVAL_S}"
+    done
+    echo "[grid] all devpods complete"
+  fi
+
+  if [[ "${COLLECT_LOGS}" == "1" ]]; then
+    mkdir -p "${LOG_DIR}"
+    echo "[grid] collecting logs into ${LOG_DIR}"
+    for pod in "${DEVPODS[@]}"; do
+      echo "[grid] collecting from ${pod}"
+      devpod --silent ssh "${pod}" --command "bash -lc '
+        set -euo pipefail
+        if [[ -d ${LOG_DIR} ]]; then
+          cd ${LOG_DIR}
+          tar -cf - run_*.log run_*.attempt*.log 2>/dev/null || tar -cf - --files-from /dev/null
+        else
+          tar -cf - --files-from /dev/null
+        fi
+      '" | tar -C "${LOG_DIR}" -xf -
+    done
+  fi
+
+  if [[ "${SUMMARY_AFTER_COLLECT}" == "1" ]]; then
+    if [[ "${COLLECT_LOGS}" != "1" ]]; then
+      echo "[grid] SUMMARY_AFTER_COLLECT=1 requires COLLECT_LOGS=1" >&2
+      exit 2
+    fi
+    echo "[grid] logging combined grid summary from ${LOG_DIR}"
+    uv run python -m src.grid_sweep_summary \
+      --log_dir "${LOG_DIR}" \
+      --run_prefix "${RUN_PREFIX}" \
+      --grid_sweep_id "${GRID_SWEEP_ID}" \
+      --sweep_axes "${SWEEP_AXES}" \
+      --resolution "${RES}" \
+      --wandb_project "${WANDB_PROJECT}" \
+      --wandb_entity "${WANDB_ENTITY}" \
+      --wandb_tags "${FINETUNE_WANDB_TAGS}" \
+      --storage_dir "${FRACTAL_STORAGE_DIR}"
+  fi
+
+  exit 0
+fi
 
 mkdir -p "${LOG_DIR}"
 echo "[grid] logging to ${LOG_DIR}"
@@ -136,14 +313,25 @@ if [[ ${num_gpus} -eq 0 ]]; then
   exit 2
 fi
 
-echo "[grid] dispatching ${#GRID_POINTS[@]} points across ${num_gpus} GPU workers"
+if [[ "${NUM_PODS}" -le 0 ]]; then
+  echo "[grid] NUM_PODS must be >= 1; got ${NUM_PODS}" >&2
+  exit 2
+fi
+if [[ "${POD_INDEX}" -lt 0 ]] || [[ "${POD_INDEX}" -ge "${NUM_PODS}" ]]; then
+  echo "[grid] POD_INDEX must satisfy 0 <= POD_INDEX < NUM_PODS; got POD_INDEX=${POD_INDEX} NUM_PODS=${NUM_PODS}" >&2
+  exit 2
+fi
+
+echo "[grid] dispatching ${#GRID_POINTS[@]} points across ${num_gpus} GPU workers (pod ${POD_INDEX}/${NUM_PODS} ${DEVPOD_NAME})"
 pids=()
 for gpu_idx in "${!GPU_IDS[@]}"; do
   gpu=${GPU_IDS[$gpu_idx]}
   (
     set +e
     worker_rc=0
-    for ((point_idx=gpu_idx; point_idx<${#GRID_POINTS[@]}; point_idx+=num_gpus)); do
+    start_idx=$((POD_INDEX + NUM_PODS * gpu_idx))
+    stride=$((NUM_PODS * num_gpus))
+    for ((point_idx=start_idx; point_idx<${#GRID_POINTS[@]}; point_idx+=stride)); do
       point=${GRID_POINTS[$point_idx]}
       lr_args=()
       if [[ "${SWEEP_AXES}" == "matrix_unembedding" ]]; then
@@ -230,18 +418,20 @@ echo "[grid] workers complete (rc=${rc})"
 
 # Summarize results + log a single W&B "grid-summary" run with the image/table.
 summary_rc=0
-if ! uv run python -m src.grid_sweep_summary \
-  --log_dir "${LOG_DIR}" \
-  --run_prefix "${RUN_PREFIX}" \
-  --grid_sweep_id "${GRID_SWEEP_ID}" \
-  --sweep_axes "${SWEEP_AXES}" \
-  --resolution "${RES}" \
-  --wandb_project "${WANDB_PROJECT}" \
-  --wandb_entity "${WANDB_ENTITY}" \
-  --wandb_tags "${FINETUNE_WANDB_TAGS}" \
-  --storage_dir "${FRACTAL_STORAGE_DIR}"; then
-  summary_rc=1
-  echo "[grid] WARNING: failed to log grid summary to W&B (log_dir=${LOG_DIR})" >&2
+if [[ "${LOG_SUMMARY}" == "1" ]]; then
+  if ! uv run python -m src.grid_sweep_summary \
+    --log_dir "${LOG_DIR}" \
+    --run_prefix "${RUN_PREFIX}" \
+    --grid_sweep_id "${GRID_SWEEP_ID}" \
+    --sweep_axes "${SWEEP_AXES}" \
+    --resolution "${RES}" \
+    --wandb_project "${WANDB_PROJECT}" \
+    --wandb_entity "${WANDB_ENTITY}" \
+    --wandb_tags "${FINETUNE_WANDB_TAGS}" \
+    --storage_dir "${FRACTAL_STORAGE_DIR}"; then
+    summary_rc=1
+    echo "[grid] WARNING: failed to log grid summary to W&B (log_dir=${LOG_DIR})" >&2
+  fi
 fi
 
 if [[ ${summary_rc} -ne 0 ]]; then

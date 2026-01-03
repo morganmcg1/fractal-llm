@@ -112,6 +112,8 @@ def enable_deterministic_mode():
 
 def repro_context():
     """Collect reproducibility-relevant metadata for logging."""
+    import socket
+
     def _git_rev():
         try:
             import subprocess
@@ -125,6 +127,11 @@ def repro_context():
             return result.stdout.strip()
         except Exception:
             return None
+
+    # Get hostname and devpod name for multi-pod sweep identification
+    hostname = socket.gethostname()
+    # DEVPOD_NAME env var is set by the multi-devpod launcher; fallback to hostname
+    devpod_name = os.environ.get("DEVPOD_NAME", hostname)
 
     ctx = {
         "seed": seed,
@@ -150,6 +157,8 @@ def repro_context():
         "torch_num_threads": torch.get_num_threads(),
         "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
         "git_commit": _git_rev(),
+        "hostname": hostname,
+        "devpod_name": devpod_name,
     }
     return ctx
 
@@ -981,6 +990,9 @@ def train_once(
                 "matrix_lr": eff_matrix_lr,
                 "embedding_lr": eff_embedding_lr,
                 "unembedding_lr": eff_unembedding_lr,
+                # Multi-devpod identification (top-level for easy W&B filtering)
+                "hostname": run_repro.get("hostname"),
+                "devpod_name": run_repro.get("devpod_name"),
             },
             tags=run_tags,
             save_code=True,
