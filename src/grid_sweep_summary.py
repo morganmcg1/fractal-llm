@@ -45,7 +45,7 @@ class Args:
     log_dir: Path  # Directory containing run_<i>_<j>.log files
     run_prefix: str  # Same prefix passed to finetune as --run
     resolution: int = 4  # Grid resolution per axis (RES)
-    sweep_axes: str = "lr_tokens"  # lr_tokens | matrix_unembedding
+    sweep_axes: str = "matrix_unembedding"  # matrix_unembedding | lr_tokens
     grid_sweep_id: str = ""  # Tag shared across all points (defaults to run_prefix)
     wandb_project: str = os.environ.get("WANDB_PROJECT", "fractal-llm")
     wandb_entity: str = os.environ.get("WANDB_ENTITY", "morgy")

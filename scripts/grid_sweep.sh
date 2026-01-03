@@ -12,7 +12,7 @@ if [[ -n "${WANDB_RUN_PREFIX}" ]]; then
   RUN_PREFIX="${WANDB_RUN_PREFIX}"
 fi
 GRID_SWEEP_ID=${GRID_SWEEP_ID:-${RUN_PREFIX}}  # constant tag across all points in this sweep
-SWEEP_AXES=${SWEEP_AXES:-lr_tokens}  # lr_tokens | matrix_unembedding
+SWEEP_AXES=${SWEEP_AXES:-matrix_unembedding}  # matrix_unembedding | lr_tokens
 RES=${RES:-4}                        # grid resolution per axis (RES x RES points)
 LR_MIN=${LR_MIN:-1e-5}
 LR_MAX=${LR_MAX:-1e-3}
@@ -73,6 +73,12 @@ _assign() {
     echo "${key}=$(_quote "${val}")"
   fi
 }
+
+if [[ "${SWEEP_AXES}" == "matrix_unembedding" ]] && [[ -z "${TOKENS_PER_RUN}" ]]; then
+  # In matrix_unembedding mode we sweep only the optimizer LRs; token budget stays fixed.
+  # Default to the max token budget from the legacy lr_tokens axis.
+  TOKENS_PER_RUN="${TOK_MAX}"
+fi
 
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "[grid] git pull --ff-only"
@@ -405,7 +411,7 @@ for gpu_idx in "${!GPU_IDS[@]}"; do
             --num_tokens "${tok}" \
             --eval_every 0 \
             --eval_batches 0 \
-            --log_every 5 \
+            --log_every 1 \
             --save_artifacts False \
             --deterministic True \
             --seed "${SEED}" \

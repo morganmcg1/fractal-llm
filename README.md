@@ -31,10 +31,12 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    RUN_PREFIX=grid-smoke \
    FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm \
    GPUS="0 1 2 3 4 5 6 7" \
+   SWEEP_AXES=matrix_unembedding \
+   TOKENS_PER_RUN=5e5 \
+   MATRIX_LR_MIN=1e-4 MATRIX_LR_MAX=3e-2 \
+   UNEMBEDDING_LR_MIN=2e-5 UNEMBEDDING_LR_MAX=6e-3 \
    TRAINABLE_PARAM_GROUPS=matrix,unembedding \
    RES=16 \
-   LR_MIN=1e-5 LR_MAX=1e-3 \
-   TOK_MIN=5e3 TOK_MAX=5e5 \
    MODEL_ID=/var/tmp/fractal-llm/results/model_cache/nanochat-d20-20251230-r3-sft-artifact_v0/checkpoints \
    DATASET_ID=morgan/docvqa-nanochat \
    # optional: pin HF commit
@@ -43,7 +45,8 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    HF_DATASETS_OFFLINE=1 \
    ./scripts/grid_sweep.sh
    ```
-   - Overrides: `TRAINABLE_PARAM_GROUPS` controls which model groups are updated (default freezes embeddings); `LR_FIXED` or `TOKENS_PER_RUN` lock LR/tokens instead of logspace; `GRID_SWEEP_ID` groups runs; `RUN_PREFIX` (or `WANDB_RUN_PREFIX`) names outputs; `LOG_DIR` changes destination.
+   - Overrides: `SWEEP_AXES=matrix_unembedding` sweeps matrix_lr×unembedding_lr at fixed `TOKENS_PER_RUN`; `SWEEP_AXES=lr_tokens` sweeps learning_rate×num_tokens using `LR_MIN..LR_MAX` and `TOK_MIN..TOK_MAX`.
+   - `TRAINABLE_PARAM_GROUPS` controls which model groups are updated (default freezes embeddings); `GRID_SWEEP_ID` groups runs; `RUN_PREFIX` (or `WANDB_RUN_PREFIX`) names outputs; `LOG_DIR` changes destination.
    - Output: per-point logs `run_<i>_<j>.log`; JSON summary prints the parsed final loss for each point.
 4) Probe the max per-GPU batch size for `src/finetune.py`:
    `GPU=0 BS_START=8 BS_MAX=256 ./scripts/probe_batch_size.sh`
@@ -52,6 +55,7 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
 Launch a single sweep across multiple devpods (each devpod runs its own set of points; each uses all local GPUs):
 ```bash
 DEVPODS="fractal-llm-1 fractal-llm-2 fractal-llm-3" \
+SWEEP_AXES=matrix_unembedding TOKENS_PER_RUN=5e5 \
 RES=5 RUN_PREFIX=5x5-trial2 GRID_SWEEP_ID=5x5-trial2 \
 ./scripts/grid_sweep.sh
 ```

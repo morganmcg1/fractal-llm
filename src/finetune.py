@@ -299,7 +299,7 @@ num_tokens = 200_000  # approximate global tokens to see
 num_iterations = -1  # derived from num_tokens if -1
 eval_every = 200
 eval_batches = 4  # number of validation batches per eval pass
-log_every = 20
+log_every = 1  # always log W&B metrics every optimizer step
 seed = 999
 deterministic = True  # if True, enable full reproducibility (slight perf hit ~5-10%)
 debug = False  # if True, run a quick smoke test with minimal data
@@ -352,6 +352,8 @@ if configurator.exists():
                 i += 1
         sys.argv = [sys.argv[0]] + new_args
     exec(configurator.read_text())
+# Always log every optimizer step (prints + W&B) for reproducible fractal grids.
+log_every = 1
 user_config = {k: globals()[k] for k in config_keys}
 
 # Respect WANDB_RUN override and attach suffix similar to chat_sft
@@ -1097,6 +1099,9 @@ def train_once(
             f"Non-positive learning rates for enabled groups: matrix_lr={eff_matrix_lr} embedding_lr={eff_embedding_lr} "
             f"unembedding_lr={eff_unembedding_lr} (trainable_param_groups={trainable_param_groups!r})"
         )
+    log_matrix_lr = eff_matrix_lr if "matrix" in trainable_groups else 0.0
+    log_embedding_lr = eff_embedding_lr if "embedding" in trainable_groups else 0.0
+    log_unembedding_lr = eff_unembedding_lr if "unembedding" in trainable_groups else 0.0
 
     wb = (
         DummyWandb()
@@ -1114,9 +1119,9 @@ def train_once(
                 "seed": seed,
                 "repro": run_repro,
                 "grid_sweep_id": sweep_id,
-                "matrix_lr": eff_matrix_lr,
-                "embedding_lr": eff_embedding_lr,
-                "unembedding_lr": eff_unembedding_lr,
+                "matrix_lr": log_matrix_lr,
+                "embedding_lr": log_embedding_lr,
+                "unembedding_lr": log_unembedding_lr,
                 "trainable_groups": ",".join(sorted(trainable_groups)),
                 # Multi-devpod identification (top-level for easy W&B filtering)
                 "hostname": run_repro.get("hostname"),

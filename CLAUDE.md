@@ -116,6 +116,7 @@ Notes:
 ```bash
 # from your laptop (local repo), launches tmux workers on each devpod and returns immediately
 DEVPODS="fractal-llm-1 fractal-llm-2 fractal-llm-3" \
+SWEEP_AXES=matrix_unembedding TOKENS_PER_RUN=5e5 \
 RES=5 RUN_PREFIX=5x5-trial2 GRID_SWEEP_ID=5x5-trial2 \
 ./scripts/grid_sweep.sh
 
