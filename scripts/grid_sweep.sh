@@ -62,6 +62,15 @@ COLLECT_LOGS=${COLLECT_LOGS:-0}     # if 1, stream logs back to local LOG_DIR af
 SUMMARY_AFTER_COLLECT=${SUMMARY_AFTER_COLLECT:-0}  # if 1, run grid_sweep_summary locally after collecting logs
 
 _quote() { printf "%q" "$1"; }
+_assign() {
+  local key=$1
+  local val=${2-}
+  if [[ -z "${val}" ]]; then
+    echo "${key}="
+  else
+    echo "${key}=$(_quote "${val}")"
+  fi
+}
 
 if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
   if ! command -v devpod >/dev/null 2>&1; then
@@ -94,39 +103,39 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
     env_assign=(
       "GRID_SWEEP_ROLE=worker"
       "DEVPODS="
-      "POD_INDEX=$(_quote "${pod_idx}")"
-      "NUM_PODS=$(_quote "${NUM_PODS}")"
-      "DEVPOD_NAME=$(_quote "${pod}")"
-      "DEVPOD_WORKDIR=$(_quote "${DEVPOD_WORKDIR}")"
-      "DEVPOD_TMUX_SESSION=$(_quote "${DEVPOD_TMUX_SESSION}")"
-      "RUN_PREFIX=$(_quote "${RUN_PREFIX}")"
-      "GRID_SWEEP_ID=$(_quote "${GRID_SWEEP_ID}")"
-      "SWEEP_AXES=$(_quote "${SWEEP_AXES}")"
-      "RES=$(_quote "${RES}")"
-      "LR_MIN=$(_quote "${LR_MIN}")"
-      "LR_MAX=$(_quote "${LR_MAX}")"
-      "TOK_MIN=$(_quote "${TOK_MIN}")"
-      "TOK_MAX=$(_quote "${TOK_MAX}")"
-      "MATRIX_LR_MIN=$(_quote "${MATRIX_LR_MIN}")"
-      "MATRIX_LR_MAX=$(_quote "${MATRIX_LR_MAX}")"
-      "UNEMBEDDING_LR_MIN=$(_quote "${UNEMBEDDING_LR_MIN}")"
-      "UNEMBEDDING_LR_MAX=$(_quote "${UNEMBEDDING_LR_MAX}")"
-      "FRACTAL_STORAGE_DIR=$(_quote "${FRACTAL_STORAGE_DIR}")"
-      "LOG_DIR=$(_quote "${LOG_DIR}")"
-      "MODEL_ID=$(_quote "${MODEL_ID}")"
-      "DATASET_ID=$(_quote "${DATASET_ID}")"
-      "DATASET_REVISION=$(_quote "${DATASET_REVISION}")"
-      "MAX_SEQ_LEN=$(_quote "${MAX_SEQ_LEN}")"
-      "TOKENS_PER_RUN=$(_quote "${TOKENS_PER_RUN}")"
-      "LR_FIXED=$(_quote "${LR_FIXED}")"
-      "SEED=$(_quote "${SEED}")"
-      "WANDB_PROJECT=$(_quote "${WANDB_PROJECT}")"
-      "WANDB_ENTITY=$(_quote "${WANDB_ENTITY}")"
-      "FINETUNE_WANDB_TAGS=$(_quote "${FINETUNE_WANDB_TAGS}")"
-      "MAX_RETRIES=$(_quote "${MAX_RETRIES}")"
-      "RETRY_BACKOFF_S=$(_quote "${RETRY_BACKOFF_S}")"
-      "RETRY_PATTERNS=$(_quote "${RETRY_PATTERNS}")"
-      "SKIP_COMPLETED=$(_quote "${SKIP_COMPLETED}")"
+      "$(_assign POD_INDEX "${pod_idx}")"
+      "$(_assign NUM_PODS "${NUM_PODS}")"
+      "$(_assign DEVPOD_NAME "${pod}")"
+      "$(_assign DEVPOD_WORKDIR "${DEVPOD_WORKDIR}")"
+      "$(_assign DEVPOD_TMUX_SESSION "${DEVPOD_TMUX_SESSION}")"
+      "$(_assign RUN_PREFIX "${RUN_PREFIX}")"
+      "$(_assign GRID_SWEEP_ID "${GRID_SWEEP_ID}")"
+      "$(_assign SWEEP_AXES "${SWEEP_AXES}")"
+      "$(_assign RES "${RES}")"
+      "$(_assign LR_MIN "${LR_MIN}")"
+      "$(_assign LR_MAX "${LR_MAX}")"
+      "$(_assign TOK_MIN "${TOK_MIN}")"
+      "$(_assign TOK_MAX "${TOK_MAX}")"
+      "$(_assign MATRIX_LR_MIN "${MATRIX_LR_MIN}")"
+      "$(_assign MATRIX_LR_MAX "${MATRIX_LR_MAX}")"
+      "$(_assign UNEMBEDDING_LR_MIN "${UNEMBEDDING_LR_MIN}")"
+      "$(_assign UNEMBEDDING_LR_MAX "${UNEMBEDDING_LR_MAX}")"
+      "$(_assign FRACTAL_STORAGE_DIR "${FRACTAL_STORAGE_DIR}")"
+      "$(_assign LOG_DIR "${LOG_DIR}")"
+      "$(_assign MODEL_ID "${MODEL_ID}")"
+      "$(_assign DATASET_ID "${DATASET_ID}")"
+      "$(_assign DATASET_REVISION "${DATASET_REVISION}")"
+      "$(_assign MAX_SEQ_LEN "${MAX_SEQ_LEN}")"
+      "$(_assign TOKENS_PER_RUN "${TOKENS_PER_RUN}")"
+      "$(_assign LR_FIXED "${LR_FIXED}")"
+      "$(_assign SEED "${SEED}")"
+      "$(_assign WANDB_PROJECT "${WANDB_PROJECT}")"
+      "$(_assign WANDB_ENTITY "${WANDB_ENTITY}")"
+      "$(_assign FINETUNE_WANDB_TAGS "${FINETUNE_WANDB_TAGS}")"
+      "$(_assign MAX_RETRIES "${MAX_RETRIES}")"
+      "$(_assign RETRY_BACKOFF_S "${RETRY_BACKOFF_S}")"
+      "$(_assign RETRY_PATTERNS "${RETRY_PATTERNS}")"
+      "$(_assign SKIP_COMPLETED "${SKIP_COMPLETED}")"
       "LOG_SUMMARY=0"
     )
     tmux_cmd="${env_assign[*]} ./scripts/grid_sweep.sh"
@@ -151,9 +160,16 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
     pids+=($!)
   done
 
+  launch_rc=0
   for pid in "${pids[@]}"; do
-    wait "${pid}" || true
+    if ! wait "${pid}"; then
+      launch_rc=1
+    fi
   done
+  if [[ "${launch_rc}" -ne 0 ]]; then
+    echo "[grid] ERROR: one or more devpods failed to launch" >&2
+    exit 3
+  fi
 
   echo "[grid] all devpods launched"
   echo "[grid] monitor:"
