@@ -13,6 +13,15 @@ Our resarch question: will fractal boundaries still emerge with more realistic a
 
 Run hyperparameter grid searches over LR × dataset size (and other axes) during SFT to visualize fractal trainability boundaries. Goal is to discover practical rules of thumb for fine-tuning LLMs.
 
+## Definition: stable vs trainable ("converged")
+
+For grids/visualizations we use two related but distinct labels:
+
+- **stable**: training completed without exceptions and the final training loss is finite
+- **trainable** (recorded as `converged`): `mean(last K train losses) / first_train_loss < trainable_loss_ratio_threshold` (defaults: `K=20`, threshold `=1.0`)
+
+This mirrors the original Sohl-Dickstein notebook approach: average over the last window to smooth oscillatory behavior, and call it trainable if it ends lower than it started.
+
 ## Dependency management and running python
 
 Always us `uv` for everything, `uv sync` for syncing dependencies, `uv run` for running files etc. 

@@ -27,6 +27,12 @@ def load_results(results_path: str | Path) -> tuple[dict, pd.DataFrame]:
 
     config = data["config"]
     df = pd.DataFrame(data["results"])
+    if "stable" not in df.columns:
+        # Backwards compatibility: infer "stable" for older result files.
+        # This matches the common-sense definition: no error and finite final loss.
+        err_ok = ~df.get("error", pd.Series([None] * len(df))).notna()
+        finite_ok = np.isfinite(df.get("final_loss", np.nan))
+        df["stable"] = err_ok & finite_ok
     return config, df
 
 
@@ -37,8 +43,11 @@ def build_grid(df: pd.DataFrame, resolution: int, metric: str = "converged") -> 
     for _, row in df.iterrows():
         i, j = int(row["grid_i"]), int(row["grid_j"])
         if 0 <= i < resolution and 0 <= j < resolution:
-            if metric == "converged":
-                grid[i, j] = 1.0 if row["converged"] else 0.0
+            if metric in {"converged", "stable"}:
+                v = row.get(metric, np.nan)
+                if pd.isna(v):
+                    continue
+                grid[i, j] = 1.0 if bool(v) else 0.0
             elif metric == "loss":
                 loss = row["final_loss"]
                 grid[i, j] = min(loss, 20.0)  # Cap for visualization
@@ -52,10 +61,10 @@ def plot_convergence_heatmap(
     config: dict,
     df: pd.DataFrame,
     output_path: str | Path | None = None,
-    title: str = "Convergence/Divergence Boundary",
+    title: str = "Trainable/Not Trainable Boundary",
 ) -> plt.Figure:
     """
-    Plot heatmap showing converged (green) vs diverged (red) regions.
+    Plot heatmap showing trainable ("converged") vs not trainable regions.
     """
     resolution = config["resolution"]
     grid = build_grid(df, resolution, metric="converged")
@@ -93,15 +102,66 @@ def plot_convergence_heatmap(
     ax.set_title(title, fontsize=14)
 
     # Add colorbar
-    cbar = plt.colorbar(im, ax=ax, label="Converged")
+    cbar = plt.colorbar(im, ax=ax, label="Trainable")
     cbar.set_ticks([0, 0.5, 1])
-    cbar.set_ticklabels(["Diverged", "Boundary", "Converged"])
+    cbar.set_ticklabels(["Not trainable", "Boundary", "Trainable"])
 
     plt.tight_layout()
 
     if output_path:
         fig.savefig(output_path, dpi=300, bbox_inches="tight")
         console.print(f"[green]Saved heatmap to {output_path}")
+
+    return fig
+
+
+def plot_stability_heatmap(
+    config: dict,
+    df: pd.DataFrame,
+    output_path: str | Path | None = None,
+    title: str = "Stable/Unstable Boundary",
+) -> plt.Figure:
+    """Plot heatmap showing stable (green) vs unstable (red) runs."""
+    resolution = config["resolution"]
+    grid = build_grid(df, resolution, metric="stable")
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "stability", ["#d62728", "#ffff00", "#2ca02c"]
+    )
+
+    lr_min, lr_max = config["lr_min"], config["lr_max"]
+    tokens_min, tokens_max = config["tokens_min"], config["tokens_max"]
+
+    im = ax.imshow(
+        grid,
+        origin="lower",
+        aspect="auto",
+        cmap=cmap,
+        vmin=0,
+        vmax=1,
+        extent=[
+            np.log10(tokens_min),
+            np.log10(tokens_max),
+            np.log10(lr_min),
+            np.log10(lr_max),
+        ],
+    )
+
+    ax.set_xlabel("log₁₀(Training Tokens)", fontsize=12)
+    ax.set_ylabel("log₁₀(Learning Rate)", fontsize=12)
+    ax.set_title(title, fontsize=14)
+
+    cbar = plt.colorbar(im, ax=ax, label="Stable")
+    cbar.set_ticks([0, 0.5, 1])
+    cbar.set_ticklabels(["Unstable", "Boundary", "Stable"])
+
+    plt.tight_layout()
+
+    if output_path:
+        fig.savefig(output_path, dpi=300, bbox_inches="tight")
+        console.print(f"[green]Saved stability heatmap to {output_path}")
 
     return fig
 
@@ -154,7 +214,7 @@ def plot_boundary(
     config: dict,
     df: pd.DataFrame,
     output_path: str | Path | None = None,
-    title: str = "Trainability Boundary",
+    title: str = "Trainability Boundary (Trainable vs Not Trainable)",
 ) -> plt.Figure:
     """Plot just the boundary between converged and diverged regions."""
     resolution = config["resolution"]
@@ -263,7 +323,7 @@ def plot_fractal_analysis(
     )
     ax1.set_xlabel("log₁₀(Training Tokens)", fontsize=12)
     ax1.set_ylabel("log₁₀(Learning Rate)", fontsize=12)
-    ax1.set_title("Trainability Boundary", fontsize=14)
+    ax1.set_title("Trainability Boundary (Trainable vs Not Trainable)", fontsize=14)
 
     # Right: log-log plot with fit
     ax2.scatter(log_sizes, log_counts, s=100, c="blue", zorder=5)
@@ -297,16 +357,22 @@ def create_all_visualizations(results_path: str | Path, output_dir: str | Path):
     console.print(f"Loaded {len(df)} results from {results_path}")
     console.print(f"Resolution: {config['resolution']}x{config['resolution']}")
 
-    # Convergence stats
-    converged = df["converged"].sum()
+    # Convergence stats (trainable == converged)
+    stable = int(df["stable"].sum()) if "stable" in df.columns else 0
+    converged = int(df["converged"].sum())
     total = len(df)
-    console.print(f"Converged: {converged}/{total} ({100*converged/total:.1f}%)")
+    console.print(f"Stable: {stable}/{total} ({100*stable/total:.1f}%)")
+    console.print(f"Trainable (converged): {converged}/{total} ({100*converged/total:.1f}%)")
 
     # Generate plots
     console.rule("Generating Plots")
 
     plot_convergence_heatmap(
         config, df, output_dir / "convergence_heatmap.png"
+    )
+
+    plot_stability_heatmap(
+        config, df, output_dir / "stability_heatmap.png"
     )
 
     plot_loss_heatmap(

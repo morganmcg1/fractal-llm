@@ -172,9 +172,18 @@ kubectl get pods --all-namespaces --context cks-wb3 \
 
 The grid sweep generates a 3-panel visualization:
 
-1. **Trainability Boundary** (left): Diverging red-white-blue colormap showing convergence
-2. **Final Loss** (center): Loss values for converged runs only (viridis colormap)
-3. **Binary Convergence** (right): Simple 0/1 convergence mask
+1. **Trainability Boundary** (left): Diverging red-white-blue colormap showing trainable vs not-trainable
+2. **Final Loss** (center): Loss values for *trainable* runs only (viridis colormap)
+3. **Binary Trainable** (right): Simple 0/1 trainability mask
+
+### Definition: stable vs trainable ("converged")
+
+We separate two concepts:
+
+- **stable**: training completed without exceptions and the final training loss is finite
+- **trainable** (this is what we record as `converged`): `mean(last K train losses) / first_train_loss < trainable_loss_ratio_threshold` (defaults: `K=20`, threshold `=1.0`)
+
+This matches the original Sohl-Dickstein notebook idea: average the last window to smooth oscillations, and call it trainable if it ends lower than it started.
 
 #### Color Scheme (Trainability Boundary)
 
@@ -182,13 +191,13 @@ The colormap uses a diverging red-white-blue scheme with values from -1.0 to +1.
 
 | Value | Color | Meaning |
 |-------|-------|---------|
-| -1.0 | Dark Red (#8B0000) | Diverged/failed (NaN loss, non-convergent) |
-| -0.5 to 0 | Pink → White | Unused (all diverged runs map to -1.0) |
-| 0.3 | Light Blue (#ADD8E6) | Converged, but **highest loss** among converged |
-| 0.65 | Royal Blue (#4169E1) | Converged, medium loss |
-| 1.0 | Dark Blue (#00008B) | Converged, **lowest loss** (best) |
+| -1.0 | Dark Red (#8B0000) | Not trainable (includes unstable failures + stable-but-not-trainable) |
+| -0.5 to 0 | Pink → White | Unused (all not-trainable runs map to -1.0) |
+| 0.3 | Light Blue (#ADD8E6) | Trainable, but **highest loss** among trainable |
+| 0.65 | Royal Blue (#4169E1) | Trainable, medium loss |
+| 1.0 | Dark Blue (#00008B) | Trainable, **lowest loss** (best) |
 
-**Key insight**: Among converged runs, the loss is normalized to [0.3, 1.0]. Lower loss → darker blue → better training outcome. This lets you see not just *if* training converged, but *how well* it converged.
+**Key insight**: Among trainable runs, the loss is normalized to [0.3, 1.0]. Lower loss → darker blue → better training outcome. This lets you see not just *if* training was trainable, but *how well* it trained.
 
 ## Notes
 - W&B: entity `morgy`, project `fractal-llm`. Fractal sweeps load the model from W&B artifact `nanochat-d20-speedrun:latest`.

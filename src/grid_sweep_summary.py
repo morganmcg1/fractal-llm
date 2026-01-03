@@ -60,6 +60,8 @@ class PointResult:
     num_tokens: int
     tokens_seen: int | None
     final_loss: float | None
+    trainable_ratio: float | None
+    stable: bool | None
     converged: bool | None
     error: str | None
     log: str
@@ -75,17 +77,31 @@ def _parse_overrides(text: str) -> dict[str, str]:
     return overrides
 
 
-def _parse_final_line(text: str) -> tuple[float | None, int | None, bool | None]:
+def _parse_final_line(text: str) -> tuple[float | None, int | None, bool | None, bool | None, float | None]:
+    # New (2026-01): includes stable + trainable_ratio.
+    m = re.search(
+        r"Final: loss=([0-9.]+) tokens_seen=([0-9,]+) stable=(True|False) converged=(True|False) trainable_ratio=([0-9.]+)",
+        text,
+    )
+    if m:
+        loss = float(m.group(1))
+        tokens_seen = int(m.group(2).replace(",", ""))
+        stable = m.group(3) == "True"
+        converged = m.group(4) == "True"
+        trainable_ratio = float(m.group(5))
+        return loss, tokens_seen, stable, converged, trainable_ratio
+
+    # Old format (backwards compatible)
     m = re.search(
         r"Final: loss=([0-9.]+) tokens_seen=([0-9,]+) converged=(True|False)",
         text,
     )
     if not m:
-        return None, None, None
+        return None, None, None, None, None
     loss = float(m.group(1))
     tokens_seen = int(m.group(2).replace(",", ""))
     converged = m.group(3) == "True"
-    return loss, tokens_seen, converged
+    return loss, tokens_seen, None, converged, None
 
 
 def _parse_error(text: str) -> str | None:
@@ -220,8 +236,10 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
         gj = int(m.group(2))
         txt = log_path.read_text(errors="replace")
         overrides = _parse_overrides(txt)
-        final_loss, tokens_seen, converged = _parse_final_line(txt)
         err = _parse_error(txt)
+        final_loss, tokens_seen, stable, converged, trainable_ratio = _parse_final_line(txt)
+        if stable is None:
+            stable = err is None and final_loss is not None and math.isfinite(final_loss)
 
         num_tokens = int(str(overrides.get("num_tokens", "0")).replace("_", ""))
         learning_rate = float(overrides["learning_rate"]) if "learning_rate" in overrides else None
@@ -235,6 +253,8 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
                 num_tokens=num_tokens,
                 tokens_seen=tokens_seen,
                 final_loss=final_loss,
+                trainable_ratio=trainable_ratio,
+                stable=stable,
                 converged=converged,
                 error=err,
                 log=log_path.name,
@@ -389,6 +409,8 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
             "num_tokens",
             "tokens_seen",
             "final_loss",
+            "trainable_ratio",
+            "stable",
             "converged",
             "error",
             "log",
@@ -402,6 +424,8 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
                 p.num_tokens,
                 p.tokens_seen,
                 p.final_loss,
+                p.trainable_ratio,
+                p.stable,
                 p.converged,
                 p.error,
                 p.log,
@@ -416,6 +440,8 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
             "num_tokens",
             "tokens_seen",
             "final_loss",
+            "trainable_ratio",
+            "stable",
             "converged",
             "error",
             "log",
@@ -428,6 +454,8 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
                 p.num_tokens,
                 p.tokens_seen,
                 p.final_loss,
+                p.trainable_ratio,
+                p.stable,
                 p.converged,
                 p.error,
                 p.log,

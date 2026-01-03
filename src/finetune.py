@@ -304,7 +304,11 @@ visualize = False  # if True, show model predictions before/after training
 gradient_checkpointing = False
 source_stage = "sft"  # nanochat checkpoint family: base|mid|sft|rl
 tokenizer_artifact = os.environ.get("TOKENIZER_ARTIFACT", None)
-convergence_loss_threshold = 2.0  # consider run converged if final CE below this and finite
+# "Converged" == "trainable" (Sohl-Dickstein-style):
+# - stable: training ran to completion without exceptions and with finite loss
+# - trainable: mean(last K losses) < first loss (averaging smooths oscillations)
+trainable_window_steps = 20
+trainable_loss_ratio_threshold = 1.0  # mean(last_K)/loss[0] < threshold ⇒ trainable
 wandb_tags = "finetune"  # comma-separated wandb tags (e.g., "finetune,debug")
 grid_sweep_id = ""  # sweep identifier tag; auto-generated as YYYY-MM-DD_HH-MM if empty
 
@@ -645,6 +649,10 @@ class RunResult:
     tokens_seen: int
     avg_loss: float
     final_loss: float
+    trainable_loss0: float
+    trainable_mean_last_k: float
+    trainable_ratio: float
+    stable: bool
     converged: bool
     steps: int
     runtime_s: float
@@ -882,9 +890,9 @@ def save_visualizations(
     )
     axes[0].set_xlabel("log₁₀(tokens)")
     axes[0].set_ylabel("log₁₀(learning rate)")
-    axes[0].set_title("Trainability Boundary\n(Blue=Converged, Red=Diverged)")
+    axes[0].set_title("Trainability Boundary\n(Blue=Trainable, Red=Not trainable)")
     cbar1 = plt.colorbar(im1, ax=axes[0])
-    cbar1.set_label("Convergence")
+    cbar1.set_label("Trainability")
 
     im2 = axes[1].imshow(
         loss_grid,
@@ -895,7 +903,7 @@ def save_visualizations(
     )
     axes[1].set_xlabel("log₁₀(tokens)")
     axes[1].set_ylabel("log₁₀(learning rate)")
-    axes[1].set_title("Final Loss (converged)")
+    axes[1].set_title("Final Loss (trainable)")
     cbar2 = plt.colorbar(im2, ax=axes[1])
     cbar2.set_label("Loss")
 
@@ -910,10 +918,10 @@ def save_visualizations(
     )
     axes[2].set_xlabel("log₁₀(tokens)")
     axes[2].set_ylabel("log₁₀(learning rate)")
-    axes[2].set_title("Binary Convergence")
+    axes[2].set_title("Binary Trainable")
     cbar3 = plt.colorbar(im3, ax=axes[2])
     cbar3.set_ticks([0, 1])
-    cbar3.set_ticklabels(["Diverged", "Converged"])
+    cbar3.set_ticklabels(["Not trainable", "Trainable"])
 
     plt.tight_layout()
     out_path = out_prefix.with_suffix(".png")
@@ -1126,6 +1134,9 @@ def train_once(
     start_time = time.time()
     error = None
     final_loss = float("inf")
+    trainable_loss0 = float("nan")
+    trainable_mean_last_k = float("nan")
+    trainable_ratio = float("nan")
 
     bf16_ok = device_type == "cuda" and torch.cuda.is_bf16_supported()
     use_bf16 = dtype == "bfloat16" and bf16_ok
@@ -1306,7 +1317,18 @@ def train_once(
         print0(f"[ERROR] training failed: {error}")
 
     runtime_s = time.time() - start_time
-    converged = error is None and math.isfinite(final_loss) and final_loss < convergence_loss_threshold
+    stable = error is None and bool(losses) and math.isfinite(final_loss)
+    if losses:
+        trainable_loss0 = float(losses[0])
+        k = min(int(trainable_window_steps), len(losses))
+        trainable_mean_last_k = float(np.mean(losses[-k:]))
+        trainable_ratio = (
+            float("inf")
+            if trainable_loss0 <= 0 or not math.isfinite(trainable_loss0)
+            else trainable_mean_last_k / trainable_loss0
+        )
+    trainable = stable and math.isfinite(trainable_ratio) and trainable_ratio < float(trainable_loss_ratio_threshold)
+    converged = trainable
     avg_loss = float(np.mean(losses)) if losses else float("inf")
 
     if device_type == "cuda" and master:
@@ -1359,6 +1381,8 @@ def train_once(
                 "final_loss": final_loss,
                 "tokens_seen": tokens_seen,
                 "converged": converged,
+                "stable": stable,
+                "trainable_ratio": trainable_ratio,
                 "learning_rate": eff_matrix_lr,
                 "matrix_lr": eff_matrix_lr,
                 "embedding_lr": eff_embedding_lr,
@@ -1384,6 +1408,10 @@ def train_once(
     if master and not use_dummy:
         wb.summary["final_train_loss"] = final_loss
         wb.summary["converged"] = converged
+        wb.summary["stable"] = stable
+        wb.summary["trainable_loss0"] = trainable_loss0
+        wb.summary["trainable_mean_last_k"] = trainable_mean_last_k
+        wb.summary["trainable_ratio"] = trainable_ratio
         wb.summary["tokens_seen"] = tokens_seen
         wb.summary["runtime_s"] = runtime_s
         wb.finish()
@@ -1400,6 +1428,10 @@ def train_once(
         tokens_seen=tokens_seen,
         avg_loss=avg_loss,
         final_loss=final_loss,
+        trainable_loss0=trainable_loss0,
+        trainable_mean_last_k=trainable_mean_last_k,
+        trainable_ratio=trainable_ratio,
+        stable=stable,
         converged=converged,
         steps=global_step,
         runtime_s=runtime_s,
@@ -1470,6 +1502,8 @@ def run_grid_search():
             "model_id": model_id,
             "dataset_id": dataset_id,
             "max_seq_len": max_seq_len,
+            "trainable_window_steps": trainable_window_steps,
+            "trainable_loss_ratio_threshold": trainable_loss_ratio_threshold,
             "repro": repro_context(),
         }
 
@@ -1521,6 +1555,8 @@ def run_grid_search():
                     "num_tokens",
                     "tokens_seen",
                     "final_loss",
+                    "trainable_ratio",
+                    "stable",
                     "converged",
                     "runtime_s",
                     "error",
@@ -1533,6 +1569,8 @@ def run_grid_search():
                         r.num_tokens_target,
                         r.tokens_seen,
                         r.final_loss,
+                        r.trainable_ratio,
+                        r.stable,
                         r.converged,
                         r.runtime_s,
                         r.error,
@@ -1559,7 +1597,10 @@ def main():
         ddp, rank, local_rank, world_size, device, _device_type = runtime
         res = train_once(runtime=runtime, grid_i=grid_i, grid_j=grid_j)
         if int(os.environ.get("RANK", 0)) == 0:
-            print0(f"\nFinal: loss={res.final_loss:.4f} tokens_seen={res.tokens_seen:,} converged={res.converged}")
+            print0(
+                f"\nFinal: loss={res.final_loss:.4f} tokens_seen={res.tokens_seen:,} "
+                f"stable={res.stable} converged={res.converged} trainable_ratio={res.trainable_ratio:.4f}"
+            )
 
             # Save results JSON (single run artifact)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
