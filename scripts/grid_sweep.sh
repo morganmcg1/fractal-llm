@@ -35,6 +35,10 @@ SEED=${SEED:-999}
 WANDB_PROJECT=${WANDB_PROJECT:-fractal-llm}
 WANDB_ENTITY=${WANDB_ENTITY:-morgy}
 FINETUNE_WANDB_TAGS=${FINETUNE_WANDB_TAGS:-fractal-grid}
+MAX_RETRIES=${MAX_RETRIES:-3}       # per-point retries for transient failures (total attempts = 1 + MAX_RETRIES)
+RETRY_BACKOFF_S=${RETRY_BACKOFF_S:-5}  # base backoff seconds (exponential-ish via multiplier)
+RETRY_PATTERNS=${RETRY_PATTERNS:-"ReadTimeout|Read timed out|ConnectionPool|ConnectionError|Temporary failure in name resolution|502|503|504"}
+SKIP_COMPLETED=${SKIP_COMPLETED:-1} # if 1, skip points whose log already contains a Final: line
 
 mkdir -p "${LOG_DIR}"
 echo "[grid] logging to ${LOG_DIR}"
@@ -154,7 +158,18 @@ for gpu_idx in "${!GPU_IDS[@]}"; do
       log="${LOG_DIR}/run_${gi}_${gj}.log"
       echo "[grid] GPU ${gpu} -> (${gi},${gj}) ${lr_desc} tok=${tok} :: ${log}"
 
-      if ! (
+      if [[ "${SKIP_COMPLETED}" == "1" ]] && [[ -f "${log}" ]] && grep -q "^Final: loss=" "${log}"; then
+        echo "[grid] SKIP (${gi},${gj}) already has Final: in ${log}"
+        continue
+      fi
+
+      attempt=0
+      point_ok=0
+      while [[ "${attempt}" -le "${MAX_RETRIES}" ]]; do
+        attempt=$((attempt + 1))
+        attempt_log="${LOG_DIR}/run_${gi}_${gj}.attempt${attempt}.log"
+        echo "[grid] GPU ${gpu} -> (${gi},${gj}) attempt ${attempt}/$((MAX_RETRIES + 1)) :: ${attempt_log}"
+
         CUDA_VISIBLE_DEVICES=${gpu} HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-0} \
           FRACTAL_STORAGE_DIR=${FRACTAL_STORAGE_DIR} \
           WANDB_PROJECT=${WANDB_PROJECT} WANDB_ENTITY=${WANDB_ENTITY} \
@@ -175,11 +190,30 @@ for gpu_idx in "${!GPU_IDS[@]}"; do
             --max_seq_len "${MAX_SEQ_LEN}" \
             --wandb_tags "${FINETUNE_WANDB_TAGS}" \
             "${extra_args[@]}" \
-            2>&1 | tee "${log}"
-      ); then
-        echo "[grid] FAILED gpu=${gpu} point=(${gi},${gj}) log=${log}" >&2
+            2>&1 | tee "${attempt_log}"
+        cmd_rc=${PIPESTATUS[0]}
+
+        # Canonical log always points at the last attempt (success or final failure).
+        cp -f "${attempt_log}" "${log}"
+
+        if [[ "${cmd_rc}" -eq 0 ]]; then
+          point_ok=1
+          break
+        fi
+
+        if grep -Eq "${RETRY_PATTERNS}" "${attempt_log}"; then
+          if [[ "${attempt}" -le "${MAX_RETRIES}" ]]; then
+            sleep_s=$((RETRY_BACKOFF_S * attempt))
+            echo "[grid] RETRY (${gi},${gj}) in ${sleep_s}s (rc=${cmd_rc}; matched RETRY_PATTERNS)"
+            sleep "${sleep_s}"
+            continue
+          fi
+        fi
+
+        echo "[grid] FAILED gpu=${gpu} point=(${gi},${gj}) rc=${cmd_rc} log=${log}" >&2
         worker_rc=1
-      fi
+        break
+      done
     done
     exit "${worker_rc}"
   ) &

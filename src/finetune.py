@@ -381,7 +381,48 @@ class DocVQADataset(IterableDataset):
         load_kwargs = {"split": self.split, "streaming": True}
         if dataset_revision:
             load_kwargs["revision"] = dataset_revision
-        ds = load_dataset(dataset_id, **load_kwargs)
+        # HF Hub can occasionally time out on repo metadata fetches (especially under parallel sweeps).
+        # Retry a few times with exponential backoff to avoid losing sweep points to transient network blips.
+        max_retries = int(os.environ.get("HF_LOAD_DATASET_RETRIES", "3"))
+        base_sleep_s = float(os.environ.get("HF_LOAD_DATASET_RETRY_SLEEP_S", "2"))
+        ds = None
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                ds = load_dataset(dataset_id, **load_kwargs)
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001 - intentional: robustness against transient hub/network errors
+                last_exc = exc
+                msg = str(exc)
+                retryable = any(
+                    s in msg
+                    for s in (
+                        "ReadTimeout",
+                        "Read timed out",
+                        "ConnectionPool",
+                        "ConnectionError",
+                        "Temporary failure in name resolution",
+                        "502",
+                        "503",
+                        "504",
+                    )
+                )
+                if not retryable or attempt >= max_retries:
+                    raise
+                sleep_s = base_sleep_s * (2**attempt)
+                if self.rank == 0:
+                    print0(
+                        f"[WARN] load_dataset({dataset_id!r}, split={self.split!r}) failed: {msg} "
+                        f"(attempt {attempt+1}/{max_retries+1}); retrying in {sleep_s:.1f}s"
+                    )
+                import time
+
+                time.sleep(sleep_s)
+        if ds is None:
+            # Should be unreachable, but keeps type-checkers happy.
+            assert last_exc is not None
+            raise last_exc
         # Keep deterministic ordering to mirror fractal-boundary experiments.
         # Avoid shuffle buffers that introduce nondeterminism across runs.
         if not deterministic:
