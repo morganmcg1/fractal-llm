@@ -89,7 +89,7 @@ def _parse_final_line(text: str) -> tuple[float | None, int | None, bool | None]
 
 
 def _parse_error(text: str) -> str | None:
-    errs = re.findall(r"^\\[ERROR\\] training failed: (.+)$", text, flags=re.MULTILINE)
+    errs = re.findall(r"^\[ERROR\] training failed: (.+)$", text, flags=re.MULTILINE)
     return errs[-1].strip() if errs else None
 
 
@@ -188,7 +188,7 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
         raise RuntimeError(f"No logs found in {log_dir}")
 
     points: list[PointResult] = []
-    name_re = re.compile(r"run_(\\d+)_(\\d+)\\.log$")
+    name_re = re.compile(r"run_(\d+)_(\d+)\.log$")
     for log_path in log_files:
         m = name_re.search(log_path.name)
         if not m:
@@ -433,4 +433,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
