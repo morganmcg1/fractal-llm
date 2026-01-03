@@ -31,6 +31,7 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    RUN_PREFIX=grid-smoke \
    FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm \
    GPUS="0 1 2 3 4 5 6 7" \
+   TRAINABLE_PARAM_GROUPS=matrix,unembedding \
    RES=16 \
    LR_MIN=1e-5 LR_MAX=1e-3 \
    TOK_MIN=5e3 TOK_MAX=5e5 \
@@ -42,11 +43,19 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    HF_DATASETS_OFFLINE=1 \
    ./scripts/grid_sweep.sh
    ```
-   - Overrides: `LR_FIXED` or `TOKENS_PER_RUN` lock LR/tokens instead of logspace; `GRID_SWEEP_ID` groups runs; `RUN_PREFIX` (or `WANDB_RUN_PREFIX`) names outputs; `LOG_DIR` changes destination.
+   - Overrides: `TRAINABLE_PARAM_GROUPS` controls which model groups are updated (default freezes embeddings); `LR_FIXED` or `TOKENS_PER_RUN` lock LR/tokens instead of logspace; `GRID_SWEEP_ID` groups runs; `RUN_PREFIX` (or `WANDB_RUN_PREFIX`) names outputs; `LOG_DIR` changes destination.
    - Output: per-point logs `run_<i>_<j>.log`; JSON summary prints the parsed final loss for each point.
 4) Probe the max per-GPU batch size for `src/finetune.py`:
    `GPU=0 BS_START=8 BS_MAX=256 ./scripts/probe_batch_size.sh`
 
+### Multi-DevPod Grid Sweep (CoreWeave)
+Launch a single sweep across multiple devpods (each devpod runs its own set of points; each uses all local GPUs):
+```bash
+DEVPODS="fractal-llm-1 fractal-llm-2 fractal-llm-3" \
+RES=5 RUN_PREFIX=5x5-trial2 GRID_SWEEP_ID=5x5-trial2 \
+./scripts/grid_sweep.sh
+```
+Monitor: `devpod ssh fractal-llm-1` then `tmux attach -t grid_5x5-trial2`.
 
 ### NanoChat
 
@@ -150,8 +159,9 @@ devpod delete fractal-llm
 ```bash
 cd /workspaces/fractal-llm && source .env && FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm \
 CUDA_VISIBLE_DEVICES=0 MAX_SEQ_LEN=1024 TOKENIZER_ARTIFACT="$MODEL_ARTIFACT" \
-python3 -m src.finetune --run devpod-default --eval_every 0 --log_every 20 --save_artifacts False
+uv run python -m src.finetune --run devpod-default --eval_every 0 --log_every 20 --save_artifacts False
 ```
+Defaults to freezing token embeddings (`--trainable_param_groups=matrix,unembedding`). Use `--trainable_param_groups=all` to train everything.
 
 **Check cluster workloads:**
 ```bash

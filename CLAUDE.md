@@ -106,7 +106,21 @@ Coreweave devpod workspace (`/workspaces/fractal-llm`) is tiny. Always store che
 ```bash
 cd /workspaces/fractal-llm && source .env && FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm \
 CUDA_VISIBLE_DEVICES=0 MAX_SEQ_LEN=1024 TOKENIZER_ARTIFACT="$MODEL_ARTIFACT" \
-python3 -m src.finetune --run devpod-default --eval_every 0 --log_every 20 --save_artifacts False
+uv run python -m src.finetune --run devpod-default --eval_every 0 --log_every 20 --save_artifacts False
+```
+Notes:
+- `src/finetune.py` now defaults to freezing token embeddings: `--trainable_param_groups=matrix,unembedding`
+- To train everything (including embeddings), pass `--trainable_param_groups=all`
+
+**Run a multi-devpod grid sweep (recommended for fractal grids)**
+```bash
+# from your laptop (local repo), launches tmux workers on each devpod and returns immediately
+DEVPODS="fractal-llm-1 fractal-llm-2 fractal-llm-3" \
+RES=5 RUN_PREFIX=5x5-trial2 GRID_SWEEP_ID=5x5-trial2 \
+./scripts/grid_sweep.sh
+
+# monitor
+devpod ssh fractal-llm-1   # then: tmux attach -t grid_5x5-trial2
 ```
 
 **Notes:**
