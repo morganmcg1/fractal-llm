@@ -58,10 +58,10 @@ DEVPOD_TMUX_SESSION=${DEVPOD_TMUX_SESSION:-grid_${RUN_PREFIX}}
 AUTO_PULL=${AUTO_PULL:-1}           # if 1, run git pull --ff-only on each devpod before starting
 AUTO_RESET=${AUTO_RESET:-1}         # if 1, run git reset --hard HEAD after pulling (restores missing tracked files)
 AUTO_UV_SYNC=${AUTO_UV_SYNC:-1}     # if 1, run uv sync --frozen on each devpod before starting
-WAIT_FOR_COMPLETION=${WAIT_FOR_COMPLETION:-0}  # if 1, wait for all devpod tmux sessions to exit
+WAIT_FOR_COMPLETION=${WAIT_FOR_COMPLETION:-0}  # deprecated: multi-devpod always waits + summarizes
 POLL_INTERVAL_S=${POLL_INTERVAL_S:-30}
-COLLECT_LOGS=${COLLECT_LOGS:-0}     # if 1, stream logs back to local LOG_DIR after completion
-SUMMARY_AFTER_COLLECT=${SUMMARY_AFTER_COLLECT:-0}  # if 1, run grid_sweep_summary locally after collecting logs
+COLLECT_LOGS=${COLLECT_LOGS:-0}     # deprecated: multi-devpod always collects logs + summarizes
+SUMMARY_AFTER_COLLECT=${SUMMARY_AFTER_COLLECT:-0}  # deprecated: multi-devpod always collects logs + summarizes
 
 _quote() { printf "%q" "$1"; }
 _assign() {
@@ -86,6 +86,11 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 fi
 
 if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
+  # Multi-devpod orchestrator: always wait, collect logs, and log a single combined W&B summary run.
+  WAIT_FOR_COMPLETION=1
+  COLLECT_LOGS=1
+  SUMMARY_AFTER_COLLECT=1
+
   if ! command -v devpod >/dev/null 2>&1; then
     echo "[grid] DEVPODS is set but devpod CLI not found in PATH" >&2
     exit 2
