@@ -33,8 +33,8 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    GPUS="0 1 2 3 4 5 6 7" \
    SWEEP_AXES=matrix_unembedding \
    TOKENS_PER_RUN=5e5 \
-   MATRIX_LR_MIN=1e-4 MATRIX_LR_MAX=3e-2 \
-   UNEMBEDDING_LR_MIN=2e-5 UNEMBEDDING_LR_MAX=6e-3 \
+   MATRIX_LR_MIN=1e-6 MATRIX_LR_MAX=3e-1 \
+   UNEMBEDDING_LR_MIN=1e-6 UNEMBEDDING_LR_MAX=1e-1 \
    TRAINABLE_PARAM_GROUPS=matrix,unembedding \
    RES=16 \
    MODEL_ID=/var/tmp/fractal-llm/results/model_cache/nanochat-d20-20251230-r3-sft-artifact_v0/checkpoints \

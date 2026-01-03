@@ -14,14 +14,14 @@ fi
 GRID_SWEEP_ID=${GRID_SWEEP_ID:-${RUN_PREFIX}}  # constant tag across all points in this sweep
 SWEEP_AXES=${SWEEP_AXES:-matrix_unembedding}  # matrix_unembedding | lr_tokens
 RES=${RES:-4}                        # grid resolution per axis (RES x RES points)
-LR_MIN=${LR_MIN:-1e-5}
-LR_MAX=${LR_MAX:-1e-3}
+LR_MIN=${LR_MIN:-1e-6}
+LR_MAX=${LR_MAX:-3e-1}
 TOK_MIN=${TOK_MIN:-5e3}
 TOK_MAX=${TOK_MAX:-5e5}
-MATRIX_LR_MIN=${MATRIX_LR_MIN:-1e-4}
-MATRIX_LR_MAX=${MATRIX_LR_MAX:-3e-4}
-UNEMBEDDING_LR_MIN=${UNEMBEDDING_LR_MIN:-2e-5}
-UNEMBEDDING_LR_MAX=${UNEMBEDDING_LR_MAX:-1e-4}
+MATRIX_LR_MIN=${MATRIX_LR_MIN:-1e-6}
+MATRIX_LR_MAX=${MATRIX_LR_MAX:-3e-1}
+UNEMBEDDING_LR_MIN=${UNEMBEDDING_LR_MIN:-1e-6}
+UNEMBEDDING_LR_MAX=${UNEMBEDDING_LR_MAX:-1e-1}
 GPU_IDS_STR=${GPUS-}
 FRACTAL_STORAGE_DIR=${FRACTAL_STORAGE_DIR:-/var/tmp/fractal-llm}
 LOG_DIR=${LOG_DIR:-${FRACTAL_STORAGE_DIR}/results/grid_logs/${RUN_PREFIX}}
@@ -45,8 +45,8 @@ LOG_SUMMARY=${LOG_SUMMARY:-1}       # if 1, log a W&B grid-summary run at the en
 # Multi-devpod orchestration (run this script locally with DEVPODS set).
 # Example:
 #   DEVPODS="fractal-llm-1 fractal-llm-2 fractal-llm-3" RES=16 TOKENS_PER_RUN=250000 \
-#   SWEEP_AXES=matrix_unembedding MATRIX_LR_MIN=1e-4 MATRIX_LR_MAX=3e-2 \
-#   UNEMBEDDING_LR_MIN=2e-5 UNEMBEDDING_LR_MAX=6e-3 \
+#   SWEEP_AXES=matrix_unembedding MATRIX_LR_MIN=1e-6 MATRIX_LR_MAX=3e-1 \
+#   UNEMBEDDING_LR_MIN=1e-6 UNEMBEDDING_LR_MAX=1e-1 \
 #   ./scripts/grid_sweep.sh
 DEVPODS_STR=${DEVPODS:-}            # space/comma-separated devpod workspace names (e.g., "fractal-llm-1 fractal-llm-2")
 GRID_SWEEP_ROLE=${GRID_SWEEP_ROLE:-}  # orchestrator|worker (internal)
@@ -300,8 +300,8 @@ if mode == "lr_tokens":
     if lr_fixed:
         lrs = np.array([float(lr_fixed)])
     else:
-        lr_min = float(os.environ.get("LR_MIN", "1e-5"))
-        lr_max = float(os.environ.get("LR_MAX", "1e-3"))
+        lr_min = float(os.environ.get("LR_MIN", "1e-6"))
+        lr_max = float(os.environ.get("LR_MAX", "3e-1"))
         lrs = np.logspace(np.log10(lr_min), np.log10(lr_max), res)
 
     if tokens_per_run:
@@ -320,10 +320,10 @@ elif mode == "matrix_unembedding":
         raise SystemExit("TOKENS_PER_RUN is required for SWEEP_AXES=matrix_unembedding")
     tok = int(float(tokens_per_run))
 
-    mmin = float(os.environ.get("MATRIX_LR_MIN", "1e-4"))
-    mmax = float(os.environ.get("MATRIX_LR_MAX", "3e-4"))
-    umin = float(os.environ.get("UNEMBEDDING_LR_MIN", "2e-5"))
-    umax = float(os.environ.get("UNEMBEDDING_LR_MAX", "1e-4"))
+    mmin = float(os.environ.get("MATRIX_LR_MIN", "1e-6"))
+    mmax = float(os.environ.get("MATRIX_LR_MAX", "3e-1"))
+    umin = float(os.environ.get("UNEMBEDDING_LR_MIN", "1e-6"))
+    umax = float(os.environ.get("UNEMBEDDING_LR_MAX", "1e-1"))
     matrix_lrs = np.logspace(np.log10(mmin), np.log10(mmax), res)
     unembedding_lrs = np.logspace(np.log10(umin), np.log10(umax), res)
 
