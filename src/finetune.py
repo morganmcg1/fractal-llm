@@ -353,6 +353,12 @@ if debug:
         run = "debug-finetune"
     print0(f"[DEBUG MODE] num_tokens={num_tokens}, log_every={log_every}, save_artifacts={save_artifacts}")
 
+# Grid sweeps should not save model checkpoints/artifacts (disk + time overhead).
+# Enforce this even if the caller accidentally enables `save_artifacts`.
+if (grid or grid_sweep_id) and save_artifacts:
+    print0("[grid] Disabling save_artifacts for grid sweeps")
+    save_artifacts = False
+
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "fractal-llm")
 WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "morgy")
 
@@ -1231,8 +1237,8 @@ def train_once(
         val_loader = build_dataloader(tokenizer, seed=seed + 999, world_size=1, rank=0, split="validation")
         visualize_predictions(model, tokenizer, val_loader, device, cast_ctx, num_samples=3, stage="after")
 
-    # Save checkpoint and upload artifact (single runs only, not grid)
-    if master and save_artifacts and not grid:
+    # Save checkpoint and upload artifact (single runs only, never during grid sweeps)
+    if master and save_artifacts and not (grid or grid_sweep_id):
         raw_model = getattr(model, "module", model)
 
         # Save checkpoint locally
