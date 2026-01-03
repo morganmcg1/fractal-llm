@@ -153,7 +153,11 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
         git reset --hard HEAD || echo \"[grid] WARNING: git reset failed on ${pod}\"
       fi
       if [[ ${AUTO_UV_SYNC} -eq 1 ]]; then
-        uv sync --frozen || echo \"[grid] WARNING: uv sync failed on ${pod}\"
+        if ! uv sync --frozen; then
+          echo \"[grid] WARNING: uv sync --frozen failed on ${pod}; removing .venv and retrying\"
+          rm -rf .venv || true
+          uv sync --frozen || echo \"[grid] WARNING: uv sync failed on ${pod}\"
+        fi
       fi
       if tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null; then
         echo \"[grid] ERROR: tmux session already exists on ${pod}: ${DEVPOD_TMUX_SESSION}\" >&2
@@ -187,7 +191,8 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
     while true; do
       alive=0
       for pod in "${DEVPODS[@]}"; do
-        if devpod --silent ssh "${pod}" --command "bash -lc 'tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null'"; then
+        status="$(devpod --silent ssh "${pod}" --command "bash -lc 'if tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null; then echo RUNNING; else echo DONE; fi'")"
+        if [[ "${status}" == *RUNNING* ]]; then
           alive=$((alive + 1))
         fi
       done
