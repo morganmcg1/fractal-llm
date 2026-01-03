@@ -825,8 +825,9 @@ def build_grids(results: List[RunResult], resolution: int):
         i = r.grid_i or 0
         j = r.grid_j or 0
         if r.converged and math.isfinite(r.final_loss):
+            # Invert intensity: lower loss → darker blue (value closer to 1.0)
             intensity = (r.final_loss - loss_min) / loss_range
-            fractal_grid[i, j] = 0.3 + 0.7 * intensity  # Blue range
+            fractal_grid[i, j] = 1.0 - 0.7 * intensity  # Range: 0.3 (worst) to 1.0 (best)
         else:
             fractal_grid[i, j] = -1.0  # Red for diverged / failed
 
@@ -845,10 +846,27 @@ def save_visualizations(
     """Create and save three-panel visualization. Returns image path."""
     fractal_grid, loss_grid, convergence_grid = build_grids(results, resolution)
 
-    colors_diverged = ["#8B0000", "#CD5C5C", "#FA8072"]  # Dark red to light red
-    colors_converged = ["#ADD8E6", "#4169E1", "#00008B"]  # Light blue to dark blue
-    colors = colors_diverged + ["#FFFFFF"] + colors_converged
-    positions = [0.0, 0.15, 0.35, 0.5, 0.65, 0.85, 1.0]
+    # Diverging red-white-blue colormap for trainability visualization
+    # Color mapping (vmin=-1, vmax=1):
+    #   -1.0: Dark red - Diverged/failed runs
+    #    0.0: White - Boundary (unused, converged starts at 0.3)
+    #    0.3: Light blue - Converged, highest loss among converged
+    #    1.0: Dark blue - Converged, lowest loss (best)
+    colors = [
+        "#8B0000",  # Dark red (diverged)
+        "#B22222",  # Firebrick
+        "#CD5C5C",  # Indian red
+        "#FA8072",  # Salmon
+        "#FFC0CB",  # Pink (light diverged)
+        "#FFFFFF",  # White (boundary)
+        "#E0FFFF",  # Light cyan
+        "#ADD8E6",  # Light blue (worst converged)
+        "#87CEEB",  # Sky blue
+        "#4169E1",  # Royal blue
+        "#0000CD",  # Medium blue
+        "#00008B",  # Dark blue (best converged)
+    ]
+    positions = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.55, 0.65, 0.75, 0.85, 0.92, 1.0]
     fractal_cmap = LinearSegmentedColormap.from_list("fractal", list(zip(positions, colors)))
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))

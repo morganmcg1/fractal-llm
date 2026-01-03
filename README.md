@@ -166,6 +166,30 @@ kubectl get pods --all-namespaces --context cks-wb3 \
 
 **Change GPU count:** Delete provider and recreate with different `RESOURCES="limits.nvidia.com/gpu=N"` (see CLAUDE.md for details).
 
+## Visualization
+
+### Trainability Boundary Chart (3-Panel Grid)
+
+The grid sweep generates a 3-panel visualization:
+
+1. **Trainability Boundary** (left): Diverging red-white-blue colormap showing convergence
+2. **Final Loss** (center): Loss values for converged runs only (viridis colormap)
+3. **Binary Convergence** (right): Simple 0/1 convergence mask
+
+#### Color Scheme (Trainability Boundary)
+
+The colormap uses a diverging red-white-blue scheme with values from -1.0 to +1.0:
+
+| Value | Color | Meaning |
+|-------|-------|---------|
+| -1.0 | Dark Red (#8B0000) | Diverged/failed (NaN loss, non-convergent) |
+| -0.5 to 0 | Pink → White | Unused (all diverged runs map to -1.0) |
+| 0.3 | Light Blue (#ADD8E6) | Converged, but **highest loss** among converged |
+| 0.65 | Royal Blue (#4169E1) | Converged, medium loss |
+| 1.0 | Dark Blue (#00008B) | Converged, **lowest loss** (best) |
+
+**Key insight**: Among converged runs, the loss is normalized to [0.3, 1.0]. Lower loss → darker blue → better training outcome. This lets you see not just *if* training converged, but *how well* it converged.
+
 ## Notes
 - W&B: entity `morgy`, project `fractal-llm`. Fractal sweeps load the model from W&B artifact `nanochat-d20-speedrun:latest`.
 - Always enable W&B metric logging for all runs (do not use `WANDB_MODE=disabled` unless explicitly requested).

@@ -94,10 +94,32 @@ def _parse_error(text: str) -> str | None:
 
 
 def _fractal_cmap():
-    colors_diverged = ["#8B0000", "#CD5C5C", "#FA8072"]  # Dark red to light red
-    colors_converged = ["#ADD8E6", "#4169E1", "#00008B"]  # Light blue to dark blue
-    colors = colors_diverged + ["#FFFFFF"] + colors_converged
-    positions = [0.0, 0.15, 0.35, 0.5, 0.65, 0.85, 1.0]
+    """Create a diverging red-white-blue colormap for trainability visualization.
+
+    Color mapping (vmin=-1, vmax=1):
+      -1.0: Dark red (#8B0000) - Diverged/failed runs
+      -0.5: Salmon (#FA8072) - (unused in practice, all diverged → -1.0)
+       0.0: White (#FFFFFF) - Boundary (unused, converged starts at 0.3)
+       0.3: Light blue (#ADD8E6) - Converged, highest loss among converged
+       0.65: Royal blue (#4169E1) - Converged, medium loss
+       1.0: Dark blue (#00008B) - Converged, lowest loss (best)
+    """
+    # More granular color stops for smoother transitions
+    colors = [
+        "#8B0000",  # Dark red (diverged)
+        "#B22222",  # Firebrick
+        "#CD5C5C",  # Indian red
+        "#FA8072",  # Salmon
+        "#FFC0CB",  # Pink (light diverged)
+        "#FFFFFF",  # White (boundary)
+        "#E0FFFF",  # Light cyan
+        "#ADD8E6",  # Light blue (worst converged)
+        "#87CEEB",  # Sky blue
+        "#4169E1",  # Royal blue
+        "#0000CD",  # Medium blue
+        "#00008B",  # Dark blue (best converged)
+    ]
+    positions = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.55, 0.65, 0.75, 0.85, 0.92, 1.0]
     return LinearSegmentedColormap.from_list("fractal", list(zip(positions, colors)))
 
 
@@ -123,8 +145,9 @@ def _build_grids(points: list[PointResult], resolution: int):
 
     for p in points:
         if p.converged and p.final_loss is not None and math.isfinite(p.final_loss):
+            # Invert intensity: lower loss → darker blue (value closer to 1.0)
             intensity = (p.final_loss - loss_min) / loss_range
-            fractal_grid[p.grid_i, p.grid_j] = 0.3 + 0.7 * intensity
+            fractal_grid[p.grid_i, p.grid_j] = 1.0 - 0.7 * intensity  # Range: 0.3 (worst) to 1.0 (best)
         else:
             fractal_grid[p.grid_i, p.grid_j] = -1.0
 
