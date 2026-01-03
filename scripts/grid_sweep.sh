@@ -161,7 +161,7 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
         if ! uv sync --frozen; then
           echo \"[grid] WARNING: uv sync --frozen failed on ${pod}; removing .venv and retrying\"
           rm -rf .venv || true
-          uv sync --frozen || echo \"[grid] WARNING: uv sync failed on ${pod}\"
+          uv sync --frozen
         fi
       fi
       if tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null; then
