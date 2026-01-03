@@ -219,7 +219,8 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
         set -euo pipefail
         if [[ -d ${LOG_DIR} ]]; then
           cd ${LOG_DIR}
-          tar -cf - run_*.log run_*.attempt*.log 2>/dev/null || tar -cf - --files-from /dev/null
+          # Only copy the canonical per-point logs; these are all we need for grid_sweep_summary.
+          tar -cf - run_*.log 2>/dev/null || tar -cf - --files-from /dev/null
         else
           tar -cf - --files-from /dev/null
         fi
