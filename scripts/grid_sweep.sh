@@ -52,7 +52,7 @@ GRID_SWEEP_ROLE=${GRID_SWEEP_ROLE:-}  # orchestrator|worker (internal)
 POD_INDEX=${POD_INDEX:-0}           # worker pod shard index in [0, NUM_PODS)
 NUM_PODS=${NUM_PODS:-1}             # number of pods participating in the sweep
 DEVPOD_NAME=${DEVPOD_NAME:-}        # optional label for logs/tags
-DEVPOD_WORKDIR=${DEVPOD_WORKDIR:-/workspaces/fractal-llm}
+DEVPOD_WORKDIR=${DEVPOD_WORKDIR:-}  # if unset in orchestrator mode, defaults per pod to /workspaces/<devpod-name>
 DEVPOD_TMUX_SESSION=${DEVPOD_TMUX_SESSION:-grid_${RUN_PREFIX}}
 AUTO_PULL=${AUTO_PULL:-1}           # if 1, run git pull --ff-only on each devpod before starting
 AUTO_UV_SYNC=${AUTO_UV_SYNC:-1}     # if 1, run uv sync --frozen on each devpod before starting
@@ -98,6 +98,7 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
   for pod_idx in "${!DEVPODS[@]}"; do
     pod="${DEVPODS[$pod_idx]}"
     echo "[grid] launching worker ${pod_idx}/${NUM_PODS} on devpod=${pod}"
+    pod_workdir="${DEVPOD_WORKDIR:-/workspaces/${pod}}"
 
     # Build env assignments for the tmux command (shell-escaped).
     env_assign=(
@@ -106,7 +107,7 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
       "$(_assign POD_INDEX "${pod_idx}")"
       "$(_assign NUM_PODS "${NUM_PODS}")"
       "$(_assign DEVPOD_NAME "${pod}")"
-      "$(_assign DEVPOD_WORKDIR "${DEVPOD_WORKDIR}")"
+      "$(_assign DEVPOD_WORKDIR "${pod_workdir}")"
       "$(_assign DEVPOD_TMUX_SESSION "${DEVPOD_TMUX_SESSION}")"
       "$(_assign RUN_PREFIX "${RUN_PREFIX}")"
       "$(_assign GRID_SWEEP_ID "${GRID_SWEEP_ID}")"
@@ -142,7 +143,7 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
 
     devpod --silent ssh "${pod}" --command "bash -lc '
       set -euo pipefail
-      cd ${DEVPOD_WORKDIR}
+      cd ${pod_workdir}
       if [[ -f .env ]]; then source .env; fi
       if [[ ${AUTO_PULL} -eq 1 ]]; then
         git pull --ff-only || echo \"[grid] WARNING: git pull failed on ${pod}\"
@@ -154,7 +155,7 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
         echo \"[grid] ERROR: tmux session already exists on ${pod}: ${DEVPOD_TMUX_SESSION}\" >&2
         exit 3
       fi
-      tmux new-session -d -s ${DEVPOD_TMUX_SESSION} -c ${DEVPOD_WORKDIR} \"${tmux_cmd}\"
+      tmux new-session -d -s ${DEVPOD_TMUX_SESSION} -c ${pod_workdir} \"${tmux_cmd}\"
       echo \"[grid] started ${pod}: tmux attach -t ${DEVPOD_TMUX_SESSION}\"
     '" &
     pids+=($!)
