@@ -55,6 +55,7 @@ DEVPOD_NAME=${DEVPOD_NAME:-}        # optional label for logs/tags
 DEVPOD_WORKDIR=${DEVPOD_WORKDIR:-}  # if unset in orchestrator mode, defaults per pod to /workspaces/<devpod-name>
 DEVPOD_TMUX_SESSION=${DEVPOD_TMUX_SESSION:-grid_${RUN_PREFIX}}
 AUTO_PULL=${AUTO_PULL:-1}           # if 1, run git pull --ff-only on each devpod before starting
+AUTO_RESET=${AUTO_RESET:-1}         # if 1, run git reset --hard HEAD after pulling (restores missing tracked files)
 AUTO_UV_SYNC=${AUTO_UV_SYNC:-1}     # if 1, run uv sync --frozen on each devpod before starting
 WAIT_FOR_COMPLETION=${WAIT_FOR_COMPLETION:-0}  # if 1, wait for all devpod tmux sessions to exit
 POLL_INTERVAL_S=${POLL_INTERVAL_S:-30}
@@ -147,6 +148,9 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
       if [[ -f .env ]]; then source .env; fi
       if [[ ${AUTO_PULL} -eq 1 ]]; then
         git pull --ff-only || echo \"[grid] WARNING: git pull failed on ${pod}\"
+      fi
+      if [[ ${AUTO_RESET} -eq 1 ]]; then
+        git reset --hard HEAD || echo \"[grid] WARNING: git reset failed on ${pod}\"
       fi
       if [[ ${AUTO_UV_SYNC} -eq 1 ]]; then
         uv sync --frozen || echo \"[grid] WARNING: uv sync failed on ${pod}\"
