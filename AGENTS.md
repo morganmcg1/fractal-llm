@@ -7,7 +7,7 @@ This project explores the fractal nature of training dynamics in neural networks
 - Paper: https://arxiv.org/abs/2402.06184
 - colab: https://colab.research.google.com/github/Sohl-Dickstein/fractal/blob/main/the_boundary_of_neural_network_trainability_is_fractal.ipynb
 
-Our resarch question: will fractal boundaries still emerge with more realistic adaptive optimizers and fine-tuning?
+Our resarch question: will fractal boundaries still emerge with more realistic adaptive optimizers and fine-tuning on the nanochat LLM?
 
 ## Project Goal
 
