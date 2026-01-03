@@ -124,9 +124,6 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
       "$(_assign UNEMBEDDING_LR_MAX "${UNEMBEDDING_LR_MAX}")"
       "$(_assign FRACTAL_STORAGE_DIR "${FRACTAL_STORAGE_DIR}")"
       "$(_assign LOG_DIR "${LOG_DIR}")"
-      "$(_assign MODEL_ID "${MODEL_ID}")"
-      "$(_assign DATASET_ID "${DATASET_ID}")"
-      "$(_assign DATASET_REVISION "${DATASET_REVISION}")"
       "$(_assign MAX_SEQ_LEN "${MAX_SEQ_LEN}")"
       "$(_assign TOKENS_PER_RUN "${TOKENS_PER_RUN}")"
       "$(_assign LR_FIXED "${LR_FIXED}")"
@@ -140,6 +137,9 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
       "$(_assign SKIP_COMPLETED "${SKIP_COMPLETED}")"
       "LOG_SUMMARY=0"
     )
+    [[ -n "${MODEL_ID}" ]] && env_assign+=("$(_assign MODEL_ID "${MODEL_ID}")")
+    [[ -n "${DATASET_ID}" ]] && env_assign+=("$(_assign DATASET_ID "${DATASET_ID}")")
+    [[ -n "${DATASET_REVISION}" ]] && env_assign+=("$(_assign DATASET_REVISION "${DATASET_REVISION}")")
     tmux_cmd="${env_assign[*]} ./scripts/grid_sweep.sh"
 
     devpod --silent ssh "${pod}" --command "bash -lc '
