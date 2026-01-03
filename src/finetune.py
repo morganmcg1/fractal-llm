@@ -581,12 +581,45 @@ def resolve_checkpoint_dir(model_ref: str) -> Path:
         art = api.artifact(art_path, type="model")
         cache_root = MODEL_CACHE_ROOT
         cache_root.mkdir(parents=True, exist_ok=True)
-        target = cache_root / art.name.replace(":", "_")
-        if not target.exists():
-            art.download(root=str(target))
-        if (target / "checkpoints").exists():
-            return target / "checkpoints"
-        return target
+
+        def has_checkpoints(path: Path) -> bool:
+            if not path.exists():
+                return False
+            return any(path.glob("model_*.pt")) and any(path.glob("meta_*.json"))
+
+        # Multiple sweep workers can try to download the same artifact concurrently.
+        # Use a simple file lock and validate the cache dir before trusting it.
+        lock_path = cache_root / f".{art.name.replace(':', '_')}.lock"
+        try:
+            import fcntl  # type: ignore[attr-defined]
+
+            with open(lock_path, "w", encoding="utf-8") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+
+                target = cache_root / art.name.replace(":", "_")
+                ckpt_subdir = target / "checkpoints"
+
+                cache_ok = has_checkpoints(ckpt_subdir) or has_checkpoints(target)
+                if target.exists() and not cache_ok:
+                    shutil.rmtree(target, ignore_errors=True)
+
+                if not target.exists():
+                    art.download(root=str(target))
+
+                if has_checkpoints(ckpt_subdir):
+                    return ckpt_subdir
+                if has_checkpoints(target):
+                    return target
+        except Exception:
+            # Fallback: best-effort without a lock (e.g., non-POSIX filesystems).
+            target = cache_root / art.name.replace(":", "_")
+            if not target.exists():
+                art.download(root=str(target))
+            if (target / "checkpoints").exists():
+                return target / "checkpoints"
+            return target
+
+        raise FileNotFoundError(f"Downloaded artifact is missing checkpoints under {target}")
     return Path(model_ref)
 
 
