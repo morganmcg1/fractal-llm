@@ -17,7 +17,7 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
 `uv run eval/run_lmeval.py --model nanochat-students/nanochat-d20 --tasks hellaswag,arc_challenge --max-samples 500`
 
 5) **Local finetune (nanochat-style, torchrun on 8 GPUs)**
-   - Fast smoke: `torchrun --standalone --nproc_per_node=1 -m src.finetune --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=10 --eval_every=0`
+   - Fast smoke: `torchrun --standalone --nproc_per_node=1 -m src.finetune --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0`
    - Full grid + visuals (writes JSON+PNG+fractal JSON to `results/`, logs W&B if `WANDB_RUN` set):  
      `torchrun --standalone --nproc_per_node=8 -m src.finetune --grid=True --run=fractal-grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5`
    - Use a specific W&B artifact as the model source:  
@@ -163,7 +163,7 @@ devpod delete fractal-llm
 ```bash
 cd /workspaces/fractal-llm && source .env && FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm \
 CUDA_VISIBLE_DEVICES=0 MAX_SEQ_LEN=1024 TOKENIZER_ARTIFACT="$MODEL_ARTIFACT" \
-uv run python -m src.finetune --run devpod-default --eval_every 0 --log_every 20 --save_artifacts False
+uv run python -m src.finetune --run devpod-default --eval_every 0 --log_every 1 --save_artifacts False
 ```
 Defaults to freezing token embeddings (`--trainable_param_groups=matrix,unembedding`). Use `--trainable_param_groups=all` to train everything.
 

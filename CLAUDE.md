@@ -106,7 +106,7 @@ Coreweave devpod workspace (`/workspaces/fractal-llm`) is tiny. Always store che
 ```bash
 cd /workspaces/fractal-llm && source .env && FRACTAL_STORAGE_DIR=/var/tmp/fractal-llm \
 CUDA_VISIBLE_DEVICES=0 MAX_SEQ_LEN=1024 TOKENIZER_ARTIFACT="$MODEL_ARTIFACT" \
-uv run python -m src.finetune --run devpod-default --eval_every 0 --log_every 20 --save_artifacts False
+uv run python -m src.finetune --run devpod-default --eval_every 0 --log_every 1 --save_artifacts False
 ```
 Notes:
 - `src/finetune.py` now defaults to freezing token embeddings: `--trainable_param_groups=matrix,unembedding`
