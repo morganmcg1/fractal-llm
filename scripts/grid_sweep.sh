@@ -196,7 +196,17 @@ echo "[grid] workers complete (rc=${rc})"
 
 # Summarize results + log a single W&B "grid-summary" run with the image/table.
 summary_rc=0
-if ! uv run python - <<'PY'
+if ! \
+  LOG_DIR="${LOG_DIR}" \
+  RUN_PREFIX="${RUN_PREFIX}" \
+  GRID_SWEEP_ID="${GRID_SWEEP_ID}" \
+  SWEEP_AXES="${SWEEP_AXES}" \
+  RES="${RES}" \
+  WANDB_PROJECT="${WANDB_PROJECT}" \
+  WANDB_ENTITY="${WANDB_ENTITY}" \
+  FINETUNE_WANDB_TAGS="${FINETUNE_WANDB_TAGS}" \
+  FRACTAL_STORAGE_DIR="${FRACTAL_STORAGE_DIR}" \
+  uv run python - <<'PY'
 import json
 import math
 import os
