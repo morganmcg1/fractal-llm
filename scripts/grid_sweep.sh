@@ -73,6 +73,11 @@ _assign() {
   fi
 }
 
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "[grid] git pull --ff-only"
+  git pull --ff-only
+fi
+
 if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
   if ! command -v devpod >/dev/null 2>&1; then
     echo "[grid] DEVPODS is set but devpod CLI not found in PATH" >&2
@@ -147,7 +152,7 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
       cd ${pod_workdir}
       if [[ -f .env ]]; then source .env; fi
       if [[ ${AUTO_PULL} -eq 1 ]]; then
-        git pull --ff-only || echo \"[grid] WARNING: git pull failed on ${pod}\"
+        git pull --ff-only
       fi
       if [[ ${AUTO_RESET} -eq 1 ]]; then
         git reset --hard HEAD || echo \"[grid] WARNING: git reset failed on ${pod}\"
