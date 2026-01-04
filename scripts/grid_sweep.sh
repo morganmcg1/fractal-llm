@@ -209,8 +209,17 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
     while true; do
       alive=0
       for pod in "${DEVPODS[@]}"; do
-        status="$(devpod --silent ssh "${pod}" --command "bash -lc 'if tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null; then echo RUNNING; else echo DONE; fi'")"
+        status="$(
+          devpod --silent ssh "${pod}" \
+            --command "bash -lc 'if tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null; then echo RUNNING; else echo DONE; fi'" \
+            || echo ERROR
+        )"
         if [[ "${status}" == *RUNNING* ]]; then
+          alive=$((alive + 1))
+        elif [[ "${status}" == *DONE* ]]; then
+          true
+        else
+          echo "[grid] WARNING: failed to poll ${pod} (status=${status}); treating as RUNNING" >&2
           alive=$((alive + 1))
         fi
       done
@@ -228,16 +237,18 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
     echo "[grid] collecting logs into ${LOG_DIR}"
     for pod in "${DEVPODS[@]}"; do
       echo "[grid] collecting from ${pod}"
-      devpod --silent ssh "${pod}" --command "bash -lc '
-        set -euo pipefail
-        if [[ -d ${LOG_DIR} ]]; then
-          cd ${LOG_DIR}
-          # Only copy the canonical per-point logs; these are all we need for grid_sweep_summary.
-          tar -cf - run_*.log 2>/dev/null || tar -cf - --files-from /dev/null
-        else
-          tar -cf - --files-from /dev/null
-        fi
-      '" | tar -C "${LOG_DIR}" -xf -
+      if ! devpod --silent ssh "${pod}" --command "bash -lc '
+          set -euo pipefail
+          if [[ -d ${LOG_DIR} ]]; then
+            cd ${LOG_DIR}
+            # Only copy the canonical per-point logs; these are all we need for grid_sweep_summary.
+            tar --exclude=\"*.attempt*.log\" -cf - run_*.log 2>/dev/null || tar -cf - --files-from /dev/null
+          else
+            tar -cf - --files-from /dev/null
+          fi
+        '" | tar -C "${LOG_DIR}" -xf -; then
+        echo "[grid] WARNING: failed to collect logs from ${pod}; continuing" >&2
+      fi
     done
   fi
 
