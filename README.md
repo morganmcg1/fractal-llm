@@ -23,6 +23,37 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
    - Use a specific W&B artifact as the model source:  
      `torchrun --standalone --nproc_per_node=1 -m src.finetune --model_id="wandb:morgy/fractal-llm/nanochat-fin-rl-artifact:v7" --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0`
 
+## Chat UI (Web)
+
+`src/chat.py` is a small wrapper around nanochat’s `third_party/nanochat/scripts/chat_web.py` that can load a model + tokenizer from a W&B artifact and serve the web chat UI/API.
+
+**Run locally (laptop)**
+```bash
+cd /path/to/fractal-llm && source .env  # or export WANDB_API_KEY=...
+uv run src/chat.py --model wandb:morgy/fractal-llm/nanochat-fin-rl-artifact:v7 --host 127.0.0.1 --port 8000
+```
+Open `http://localhost:8000`.
+
+**Run Karpathy’s HF d32 checkpoint**
+```bash
+uv run src/chat.py --model hf:karpathy/nanochat-d32 --host 127.0.0.1 --port 8000
+```
+
+**Run on DevPod (GPU)**
+```bash
+ssh fractal-llm.devpod
+cd /workspaces/fractal-llm && source .env
+./scripts/chat_devpod.sh \
+  --model wandb:morgy/fractal-llm/nanochat-fin-rl-artifact:v7 \
+  --port 8000 --num-gpus 1
+```
+
+**Connect from your laptop**
+```bash
+ssh -L 8000:localhost:8000 fractal-llm.devpod
+```
+Then open `http://localhost:8000` in your browser.
+
 ### Local Grid Sweep (parallel single-GPU)
 1) Cache model/tokenizer locally (e.g., `${FRACTAL_STORAGE_DIR:-/var/tmp/fractal-llm}/results/model_cache/.../checkpoints`). Cache DocVQA once, then set `HF_DATASETS_OFFLINE=1` for repeatable sweeps.
 2) Select GPUs: `GPUS="0 1 2 3 4 5 6 7"` (one run per ID).
