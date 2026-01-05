@@ -113,39 +113,52 @@ def _fractal_cmap():
     """Create a diverging red-white-blue colormap for trainability visualization.
 
     Color mapping (vmin=-1, vmax=1):
-      -1.0: Dark red (#8B0000) - Diverged/failed runs
-      -0.5: Salmon (#FA8072) - (unused in practice, all diverged → -1.0)
-       0.0: White (#FFFFFF) - Boundary (unused, converged starts at 0.3)
-       0.3: Light blue (#ADD8E6) - Converged, highest loss among converged
-       0.65: Royal blue (#4169E1) - Converged, medium loss
-       1.0: Dark blue (#00008B) - Converged, lowest loss (best)
+      -1.0: Dark red (#8B0000) - Not trainable runs (includes both unstable AND stable-but-not-improving)
+      -0.5: Salmon (#FA8072) - (unused in practice, all not trainable → -1.0)
+       0.0: White (#FFFFFF) - Boundary (unused, trainable starts at 0.3)
+       0.3: Light blue (#ADD8E6) - Trainable, highest loss among trainable
+       0.65: Royal blue (#4169E1) - Trainable, medium loss
+       1.0: Dark blue (#00008B) - Trainable, lowest loss (best)
     """
     # More granular color stops for smoother transitions
     colors = [
-        "#8B0000",  # Dark red (diverged)
+        "#8B0000",  # Dark red (not trainable)
         "#B22222",  # Firebrick
         "#CD5C5C",  # Indian red
         "#FA8072",  # Salmon
-        "#FFC0CB",  # Pink (light diverged)
+        "#FFC0CB",  # Pink (light not trainable)
         "#FFFFFF",  # White (boundary)
         "#E0FFFF",  # Light cyan
-        "#ADD8E6",  # Light blue (worst converged)
+        "#ADD8E6",  # Light blue (worst trainable)
         "#87CEEB",  # Sky blue
         "#4169E1",  # Royal blue
         "#0000CD",  # Medium blue
-        "#00008B",  # Dark blue (best converged)
+        "#00008B",  # Dark blue (best trainable)
     ]
     positions = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.55, 0.65, 0.75, 0.85, 0.92, 1.0]
     return LinearSegmentedColormap.from_list("fractal", list(zip(positions, colors)))
 
 
 def _build_grids(points: list[PointResult], resolution: int):
+    """Build visualization grids from sweep results.
+
+    Returns:
+        fractal_grid: Trainability with loss-based intensity (for colormap visualization)
+        loss_grid: Final loss values (NaN for non-trainable)
+        convergence_grid: Binary trainability (1=trainable, 0=not trainable)
+        stability_grid: Binary stability (1=stable/finite loss, 0=unstable/NaN)
+    """
     fractal_grid = np.zeros((resolution, resolution))
     loss_grid = np.full((resolution, resolution), np.nan)
     convergence_grid = np.zeros((resolution, resolution))
+    stability_grid = np.zeros((resolution, resolution))
 
     converged_losses: list[float] = []
     for p in points:
+        # Stability: did training complete with finite loss?
+        stability_grid[p.grid_i, p.grid_j] = 1.0 if p.stable else 0.0
+
+        # Trainability: did loss improve?
         if p.converged and p.final_loss is not None and math.isfinite(p.final_loss):
             loss_grid[p.grid_i, p.grid_j] = p.final_loss
             converged_losses.append(p.final_loss)
@@ -167,7 +180,7 @@ def _build_grids(points: list[PointResult], resolution: int):
         else:
             fractal_grid[p.grid_i, p.grid_j] = -1.0
 
-    return fractal_grid, loss_grid, convergence_grid
+    return fractal_grid, loss_grid, convergence_grid, stability_grid
 
 
 def _compute_fractal(convergence_grid: np.ndarray):
@@ -273,7 +286,7 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
             )
         )
 
-    fractal_grid, loss_grid, convergence_grid = _build_grids(points, args.resolution)
+    fractal_grid, loss_grid, convergence_grid, stability_grid = _build_grids(points, args.resolution)
     fractal = _compute_fractal(convergence_grid)
 
     if args.sweep_axes == "matrix_unembedding":
@@ -297,8 +310,9 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
     ey0, ey1 = _safe_extent(ymin, ymax)
     extent = [ex0, ex1, ey0, ey1]
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig, axes = plt.subplots(1, 4, figsize=(24, 6))
 
+    # Panel 1: Trainability Boundary (with loss-intensity coloring)
     im1 = axes[0].imshow(
         fractal_grid,
         origin="lower",
@@ -310,22 +324,41 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
     )
     axes[0].set_xlabel(x_label)
     axes[0].set_ylabel(y_label)
-    axes[0].set_title("Trainability Boundary\n(Blue=Converged, Red=Diverged)")
-    plt.colorbar(im1, ax=axes[0]).set_label("Convergence")
+    axes[0].set_title("Trainability Boundary\n(Blue=Trainable, Red=Not Trainable)")
+    plt.colorbar(im1, ax=axes[0]).set_label("Trainability")
 
+    # Panel 2: Stability Boundary (the TRUE fractal boundary from the papers)
     im2 = axes[1].imshow(
+        stability_grid,
+        origin="lower",
+        aspect="auto",
+        cmap="RdYlGn",  # Red=Unstable, Yellow=boundary, Green=Stable
+        vmin=0,
+        vmax=1,
+        extent=extent,
+    )
+    axes[1].set_xlabel(x_label)
+    axes[1].set_ylabel(y_label)
+    axes[1].set_title("Stability Boundary\n(Green=Stable, Red=Unstable)")
+    cbar2 = plt.colorbar(im2, ax=axes[1])
+    cbar2.set_ticks([0, 1])
+    cbar2.set_ticklabels(["Unstable", "Stable"])
+
+    # Panel 3: Final Loss (trainable runs only)
+    im3 = axes[2].imshow(
         loss_grid,
         origin="lower",
         aspect="auto",
         cmap="viridis_r",
         extent=extent,
     )
-    axes[1].set_xlabel(x_label)
-    axes[1].set_ylabel(y_label)
-    axes[1].set_title("Final Loss (converged)")
-    plt.colorbar(im2, ax=axes[1]).set_label("Loss")
+    axes[2].set_xlabel(x_label)
+    axes[2].set_ylabel(y_label)
+    axes[2].set_title("Final Loss (trainable only)")
+    plt.colorbar(im3, ax=axes[2]).set_label("Loss")
 
-    im3 = axes[2].imshow(
+    # Panel 4: Binary Trainability
+    im4 = axes[3].imshow(
         convergence_grid,
         origin="lower",
         aspect="auto",
@@ -334,12 +367,12 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
         vmax=1,
         extent=extent,
     )
-    axes[2].set_xlabel(x_label)
-    axes[2].set_ylabel(y_label)
-    axes[2].set_title("Binary Convergence")
-    cbar3 = plt.colorbar(im3, ax=axes[2])
-    cbar3.set_ticks([0, 1])
-    cbar3.set_ticklabels(["Diverged", "Converged"])
+    axes[3].set_xlabel(x_label)
+    axes[3].set_ylabel(y_label)
+    axes[3].set_title("Binary Trainability")
+    cbar4 = plt.colorbar(im4, ax=axes[3])
+    cbar4.set_ticks([0, 1])
+    cbar4.set_ticklabels(["Not Trainable", "Trainable"])
 
     plt.tight_layout()
     out_prefix = log_dir / f"grid_summary_{args.run_prefix}"
@@ -391,12 +424,16 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
         tags=tags,
         settings=wandb.Settings(init_timeout=300, _service_wait=300),
     )
+    # Compute stability ratio (separate from trainability/converged ratio)
+    stable_ratio = float(stability_grid.sum() / stability_grid.size)
+
     summary_run.log(
         {
             "fractal/image": wandb.Image(str(img_path), caption=caption),
             "fractal/dimension": fractal["fractal_dimension"],
             "fractal/boundary_pixels": fractal["boundary_pixels"],
             "fractal/converged_ratio": fractal["converged_ratio"],
+            "fractal/stable_ratio": stable_ratio,  # NEW: true stability (no NaN)
         }
     )
 

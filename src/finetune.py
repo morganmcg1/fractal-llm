@@ -870,16 +870,29 @@ def visualize_predictions(model, tokenizer, dataloader, device, cast_ctx, num_sa
 
 
 def build_grids(results: List[RunResult], resolution: int):
-    """Construct convergence, loss, and intensity grids."""
+    """Construct trainability, loss, stability, and intensity grids.
+
+    Returns:
+        fractal_grid: Trainability with loss-based intensity (for colormap visualization)
+        loss_grid: Final loss values (NaN for non-trainable)
+        convergence_grid: Binary trainability (1=trainable, 0=not trainable)
+        stability_grid: Binary stability (1=stable/finite loss, 0=unstable/NaN)
+    """
     fractal_grid = np.zeros((resolution, resolution))
     loss_grid = np.full((resolution, resolution), np.nan)
     convergence_grid = np.zeros((resolution, resolution))
+    stability_grid = np.zeros((resolution, resolution))
 
     converged_losses: List[float] = []
 
     for r in results:
         i = r.grid_i or 0
         j = r.grid_j or 0
+
+        # Stability: did training complete with finite loss?
+        stability_grid[i, j] = 1.0 if r.stable else 0.0
+
+        # Trainability: did loss improve?
         if r.converged and math.isfinite(r.final_loss):
             loss_grid[i, j] = r.final_loss
             converged_losses.append(r.final_loss)
@@ -901,9 +914,9 @@ def build_grids(results: List[RunResult], resolution: int):
             intensity = (r.final_loss - loss_min) / loss_range
             fractal_grid[i, j] = 1.0 - 0.7 * intensity  # Range: 0.3 (worst) to 1.0 (best)
         else:
-            fractal_grid[i, j] = -1.0  # Red for diverged / failed
+            fractal_grid[i, j] = -1.0  # Red for not trainable
 
-    return fractal_grid, loss_grid, convergence_grid
+    return fractal_grid, loss_grid, convergence_grid, stability_grid
 
 
 def save_visualizations(
@@ -915,34 +928,37 @@ def save_visualizations(
     tokens_max: float,
     out_prefix: Path,
 ):
-    """Create and save three-panel visualization. Returns image path."""
-    fractal_grid, loss_grid, convergence_grid = build_grids(results, resolution)
+    """Create and save four-panel visualization. Returns image path."""
+    fractal_grid, loss_grid, convergence_grid, stability_grid = build_grids(results, resolution)
 
     # Diverging red-white-blue colormap for trainability visualization
     # Color mapping (vmin=-1, vmax=1):
-    #   -1.0: Dark red - Diverged/failed runs
-    #    0.0: White - Boundary (unused, converged starts at 0.3)
-    #    0.3: Light blue - Converged, highest loss among converged
-    #    1.0: Dark blue - Converged, lowest loss (best)
+    #   -1.0: Dark red - Not trainable runs (includes both unstable AND stable-but-not-improving)
+    #    0.0: White - Boundary (unused, trainable starts at 0.3)
+    #    0.3: Light blue - Trainable, highest loss among trainable
+    #    1.0: Dark blue - Trainable, lowest loss (best)
     colors = [
-        "#8B0000",  # Dark red (diverged)
+        "#8B0000",  # Dark red (not trainable)
         "#B22222",  # Firebrick
         "#CD5C5C",  # Indian red
         "#FA8072",  # Salmon
-        "#FFC0CB",  # Pink (light diverged)
+        "#FFC0CB",  # Pink (light not trainable)
         "#FFFFFF",  # White (boundary)
         "#E0FFFF",  # Light cyan
-        "#ADD8E6",  # Light blue (worst converged)
+        "#ADD8E6",  # Light blue (worst trainable)
         "#87CEEB",  # Sky blue
         "#4169E1",  # Royal blue
         "#0000CD",  # Medium blue
-        "#00008B",  # Dark blue (best converged)
+        "#00008B",  # Dark blue (best trainable)
     ]
     positions = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.55, 0.65, 0.75, 0.85, 0.92, 1.0]
     fractal_cmap = LinearSegmentedColormap.from_list("fractal", list(zip(positions, colors)))
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    extent = [np.log10(tokens_min), np.log10(tokens_max), np.log10(lr_min), np.log10(lr_max)]
 
+    fig, axes = plt.subplots(1, 4, figsize=(24, 6))
+
+    # Panel 1: Trainability Boundary (with loss-intensity coloring)
     im1 = axes[0].imshow(
         fractal_grid,
         origin="lower",
@@ -950,42 +966,61 @@ def save_visualizations(
         cmap=fractal_cmap,
         vmin=-1.0,
         vmax=1.0,
-        extent=[np.log10(tokens_min), np.log10(tokens_max), np.log10(lr_min), np.log10(lr_max)],
+        extent=extent,
     )
     axes[0].set_xlabel("log₁₀(tokens)")
     axes[0].set_ylabel("log₁₀(learning rate)")
-    axes[0].set_title("Trainability Boundary\n(Blue=Trainable, Red=Not trainable)")
+    axes[0].set_title("Trainability Boundary\n(Blue=Trainable, Red=Not Trainable)")
     cbar1 = plt.colorbar(im1, ax=axes[0])
     cbar1.set_label("Trainability")
 
+    # Panel 2: Stability Boundary (the TRUE fractal boundary from the papers)
     im2 = axes[1].imshow(
+        stability_grid,
+        origin="lower",
+        aspect="auto",
+        cmap="RdYlGn",  # Red=Unstable, Yellow=boundary, Green=Stable
+        vmin=0,
+        vmax=1,
+        extent=extent,
+    )
+    axes[1].set_xlabel("log₁₀(tokens)")
+    axes[1].set_ylabel("log₁₀(learning rate)")
+    axes[1].set_title("Stability Boundary\n(Green=Stable, Red=Unstable)")
+    cbar2 = plt.colorbar(im2, ax=axes[1])
+    cbar2.set_ticks([0, 1])
+    cbar2.set_ticklabels(["Unstable", "Stable"])
+
+    # Panel 3: Final Loss (trainable runs only)
+    im3 = axes[2].imshow(
         loss_grid,
         origin="lower",
         aspect="auto",
         cmap="viridis_r",
-        extent=[np.log10(tokens_min), np.log10(tokens_max), np.log10(lr_min), np.log10(lr_max)],
+        extent=extent,
     )
-    axes[1].set_xlabel("log₁₀(tokens)")
-    axes[1].set_ylabel("log₁₀(learning rate)")
-    axes[1].set_title("Final Loss (trainable)")
-    cbar2 = plt.colorbar(im2, ax=axes[1])
-    cbar2.set_label("Loss")
+    axes[2].set_xlabel("log₁₀(tokens)")
+    axes[2].set_ylabel("log₁₀(learning rate)")
+    axes[2].set_title("Final Loss (trainable only)")
+    cbar3 = plt.colorbar(im3, ax=axes[2])
+    cbar3.set_label("Loss")
 
-    im3 = axes[2].imshow(
+    # Panel 4: Binary Trainability
+    im4 = axes[3].imshow(
         convergence_grid,
         origin="lower",
         aspect="auto",
         cmap="RdBu",
         vmin=0,
         vmax=1,
-        extent=[np.log10(tokens_min), np.log10(tokens_max), np.log10(lr_min), np.log10(lr_max)],
+        extent=extent,
     )
-    axes[2].set_xlabel("log₁₀(tokens)")
-    axes[2].set_ylabel("log₁₀(learning rate)")
-    axes[2].set_title("Binary Trainable")
-    cbar3 = plt.colorbar(im3, ax=axes[2])
-    cbar3.set_ticks([0, 1])
-    cbar3.set_ticklabels(["Not trainable", "Trainable"])
+    axes[3].set_xlabel("log₁₀(tokens)")
+    axes[3].set_ylabel("log₁₀(learning rate)")
+    axes[3].set_title("Binary Trainability")
+    cbar4 = plt.colorbar(im4, ax=axes[3])
+    cbar4.set_ticks([0, 1])
+    cbar4.set_ticklabels(["Not Trainable", "Trainable"])
 
     plt.tight_layout()
     out_path = out_prefix.with_suffix(".png")

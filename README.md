@@ -213,13 +213,14 @@ kubectl get pods --all-namespaces --context cks-wb3 \
 
 ## Visualization
 
-### Trainability Boundary Chart (3-Panel Grid)
+### Trainability Boundary Chart (4-Panel Grid)
 
-The grid sweep generates a 3-panel visualization:
+The grid sweep generates a 4-panel visualization:
 
-1. **Trainability Boundary** (left): Diverging red-white-blue colormap showing trainable vs not-trainable
-2. **Final Loss** (center): Loss values for *trainable* runs only (viridis colormap)
-3. **Binary Trainable** (right): Simple 0/1 trainability mask
+1. **Trainability Boundary** (leftmost): Diverging red-white-blue colormap showing trainable vs not-trainable
+2. **Stability Boundary** (second): Green=Stable, Red=Unstable - this shows the TRUE fractal boundary from the papers
+3. **Final Loss** (third): Loss values for *trainable* runs only (viridis colormap)
+4. **Binary Trainability** (right): Simple 0/1 trainability mask
 
 ### Definition: stable vs trainable ("converged")
 
@@ -243,6 +244,21 @@ The colormap uses a diverging red-white-blue scheme with values from -1.0 to +1.
 | 1.0 | Dark Blue (#00008B) | Trainable, **lowest loss** (best) |
 
 **Key insight**: Among trainable runs, the loss is normalized to [0.3, 1.0]. Lower loss → darker blue → better training outcome. This lets you see not just *if* training was trainable, but *how well* it trained.
+
+### Important: Stability vs Trainability Boundaries
+
+**The trainability boundary is NOT the same as the stability boundary!**
+
+| Boundary Type | What It Shows | Red Means |
+|---------------|---------------|-----------|
+| **Stability** (fractal papers) | Numerical stability | Unstable (NaN/error/explosion) |
+| **Trainability** (our primary vis) | Model improvement | No improvement (stable OR unstable) |
+
+**Why low learning rates appear red in the trainability plot:** Low LRs are typically **stable** (no NaN) but **not trainable** (loss doesn't improve within the token budget). They appear red because training completed successfully but `mean(last K losses) >= initial loss`.
+
+This is NOT divergence - these runs are stable but undertrained. The fractal boundary from Sohl-Dickstein's papers appears in the **Stability Boundary** panel, not the Trainability Boundary panel.
+
+The stability plot (Panel 2) shows the TRUE instability boundary where training produces NaN or errors - this is the fractal structure studied in the original papers.
 
 ## Notes
 - W&B: entity `morgy`, project `fractal-llm`. Fractal sweeps load the model from W&B artifact `nanochat-d20-speedrun:latest`.

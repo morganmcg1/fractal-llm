@@ -72,7 +72,7 @@ def plot_convergence_heatmap(
     # Create figure
     fig, ax = plt.subplots(figsize=(10, 8))
 
-    # Custom colormap: red (diverged) -> yellow (boundary) -> green (converged)
+    # Custom colormap: red (not trainable) -> yellow (boundary) -> green (trainable)
     cmap = mcolors.LinearSegmentedColormap.from_list(
         "convergence", ["#d62728", "#ffff00", "#2ca02c"]
     )
@@ -216,7 +216,7 @@ def plot_boundary(
     output_path: str | Path | None = None,
     title: str = "Trainability Boundary (Trainable vs Not Trainable)",
 ) -> plt.Figure:
-    """Plot just the boundary between converged and diverged regions."""
+    """Plot just the boundary between trainable and not trainable regions."""
     resolution = config["resolution"]
     grid = build_grid(df, resolution, metric="converged")
 
