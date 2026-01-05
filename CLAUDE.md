@@ -123,6 +123,9 @@ RES=5 RUN_PREFIX=5x5-trial2 GRID_SWEEP_ID=5x5-trial2 \
 # monitor
 devpod ssh fractal-llm-1   # then: tmux attach -t grid_5x5-trial2
 ```
+Notes:
+- Set `FINAL_LR_FRAC=1.0` to disable cosine annealing (constant LR after warmup).
+- Set `WAIT_FOR_COMPLETION=0` to launch workers and return immediately (no log collection/summary).
 
 **Notes:**
 - Workspace syncs local directory to `/workspaces/fractal-llm` in container (~1.2GB with data/)

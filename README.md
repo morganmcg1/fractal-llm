@@ -73,11 +73,13 @@ Then open `http://localhost:8000` in your browser.
    # optional: pin HF commit
    DATASET_REVISION=main \
    MAX_SEQ_LEN=1024 \
+   # optional: disable cosine annealing (constant LR after warmup)
+   FINAL_LR_FRAC=1.0 \
    HF_DATASETS_OFFLINE=1 \
    ./scripts/grid_sweep.sh
    ```
    - Overrides: `SWEEP_AXES=matrix_unembedding` sweeps matrix_lr×unembedding_lr at fixed `TOKENS_PER_RUN`; `SWEEP_AXES=lr_tokens` sweeps learning_rate×num_tokens using `LR_MIN..LR_MAX` and `TOK_MIN..TOK_MAX`.
-   - `TRAINABLE_PARAM_GROUPS` controls which model groups are updated (default freezes embeddings); `GRID_SWEEP_ID` groups runs; `RUN_PREFIX` (or `WANDB_RUN_PREFIX`) names outputs; `LOG_DIR` changes destination.
+   - `TRAINABLE_PARAM_GROUPS` controls which model groups are updated (default freezes embeddings); `FINAL_LR_FRAC=1.0` disables cosine annealing; `GRID_SWEEP_ID` groups runs; `RUN_PREFIX` (or `WANDB_RUN_PREFIX`) names outputs; `LOG_DIR` changes destination.
    - Output: per-point logs `run_<i>_<j>.log`; JSON summary prints the parsed final loss for each point.
 4) Probe the max per-GPU batch size for `src/finetune.py`:
    `GPU=0 BS_START=8 BS_MAX=256 ./scripts/probe_batch_size.sh`
@@ -91,6 +93,7 @@ RES=5 RUN_PREFIX=5x5-trial2 GRID_SWEEP_ID=5x5-trial2 \
 ./scripts/grid_sweep.sh
 ```
 Monitor: `devpod ssh fractal-llm-1` then `tmux attach -t grid_5x5-trial2`.
+Set `WAIT_FOR_COMPLETION=0` to launch workers and return immediately (no log collection/summary).
 
 ### NanoChat
 

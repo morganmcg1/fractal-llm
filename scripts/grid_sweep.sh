@@ -36,6 +36,7 @@ WANDB_PROJECT=${WANDB_PROJECT:-fractal-llm}
 WANDB_ENTITY=${WANDB_ENTITY:-morgy}
 FINETUNE_WANDB_TAGS=${FINETUNE_WANDB_TAGS:-fractal-grid}
 TRAINABLE_PARAM_GROUPS=${TRAINABLE_PARAM_GROUPS:-matrix,unembedding}  # passed to src.finetune --trainable_param_groups
+FINAL_LR_FRAC=${FINAL_LR_FRAC:-}         # if set, passes --final_lr_frac to src.finetune (1.0 disables cosine anneal)
 MAX_RETRIES=${MAX_RETRIES:-3}       # per-point retries for transient failures (total attempts = 1 + MAX_RETRIES)
 RETRY_BACKOFF_S=${RETRY_BACKOFF_S:-5}  # base backoff seconds (exponential-ish via multiplier)
 RETRY_PATTERNS=${RETRY_PATTERNS:-"ReadTimeout|Read timed out|ConnectionPool|ConnectionError|Temporary failure in name resolution|502|503|504"}
@@ -58,10 +59,10 @@ DEVPOD_TMUX_SESSION=${DEVPOD_TMUX_SESSION:-grid_${RUN_PREFIX}}
 AUTO_PULL=${AUTO_PULL:-1}           # if 1, run git pull --ff-only on each devpod before starting
 AUTO_RESET=${AUTO_RESET:-1}         # if 1, run git reset --hard HEAD after pulling (restores missing tracked files)
 AUTO_UV_SYNC=${AUTO_UV_SYNC:-1}     # if 1, run uv sync --frozen on each devpod before starting
-WAIT_FOR_COMPLETION=${WAIT_FOR_COMPLETION:-0}  # deprecated: multi-devpod always waits + summarizes
+WAIT_FOR_COMPLETION=${WAIT_FOR_COMPLETION-}  # if 1, orchestrator waits for tmux workers to finish
 POLL_INTERVAL_S=${POLL_INTERVAL_S:-30}
-COLLECT_LOGS=${COLLECT_LOGS:-0}     # deprecated: multi-devpod always collects logs + summarizes
-SUMMARY_AFTER_COLLECT=${SUMMARY_AFTER_COLLECT:-0}  # deprecated: multi-devpod always collects logs + summarizes
+COLLECT_LOGS=${COLLECT_LOGS-}     # if 1, pull run_*.log files back to LOG_DIR after completion
+SUMMARY_AFTER_COLLECT=${SUMMARY_AFTER_COLLECT-}  # if 1, run src.grid_sweep_summary after collecting logs
 
 _quote() { printf "%q" "$1"; }
 _assign() {
@@ -86,10 +87,30 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 fi
 
 if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
-  # Multi-devpod orchestrator: always wait, collect logs, and log a single combined W&B summary run.
-  WAIT_FOR_COMPLETION=1
-  COLLECT_LOGS=1
-  SUMMARY_AFTER_COLLECT=1
+  # Multi-devpod orchestrator defaults to: wait -> collect logs -> log summary.
+  # Set WAIT_FOR_COMPLETION=0 to launch workers and exit immediately.
+  if [[ -z "${WAIT_FOR_COMPLETION}" ]]; then
+    WAIT_FOR_COMPLETION=1
+  fi
+  if [[ "${WAIT_FOR_COMPLETION}" == "1" ]]; then
+    if [[ -z "${COLLECT_LOGS}" ]]; then
+      COLLECT_LOGS=1
+    fi
+    if [[ -z "${SUMMARY_AFTER_COLLECT}" ]]; then
+      SUMMARY_AFTER_COLLECT=1
+    fi
+  else
+    if [[ -z "${COLLECT_LOGS}" ]]; then
+      COLLECT_LOGS=0
+    fi
+    if [[ -z "${SUMMARY_AFTER_COLLECT}" ]]; then
+      SUMMARY_AFTER_COLLECT=0
+    fi
+  fi
+  if [[ "${WAIT_FOR_COMPLETION}" != "1" ]] && [[ "${COLLECT_LOGS}" == "1" || "${SUMMARY_AFTER_COLLECT}" == "1" ]]; then
+    echo "[grid] ERROR: COLLECT_LOGS/SUMMARY_AFTER_COLLECT require WAIT_FOR_COMPLETION=1" >&2
+    exit 2
+  fi
 
   if ! command -v devpod >/dev/null 2>&1; then
     echo "[grid] DEVPODS is set but devpod CLI not found in PATH" >&2
@@ -149,6 +170,7 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
       "$(_assign WANDB_ENTITY "${WANDB_ENTITY}")"
       "$(_assign FINETUNE_WANDB_TAGS "${FINETUNE_WANDB_TAGS}")"
       "$(_assign TRAINABLE_PARAM_GROUPS "${TRAINABLE_PARAM_GROUPS}")"
+      "$(_assign FINAL_LR_FRAC "${FINAL_LR_FRAC}")"
       "$(_assign MAX_RETRIES "${MAX_RETRIES}")"
       "$(_assign RETRY_BACKOFF_S "${RETRY_BACKOFF_S}")"
       "$(_assign RETRY_PATTERNS "${RETRY_PATTERNS}")"
@@ -277,6 +299,12 @@ mkdir -p "${LOG_DIR}"
 echo "[grid] logging to ${LOG_DIR}"
 echo "[grid] W&B project=${WANDB_PROJECT} entity=${WANDB_ENTITY} tags=${FINETUNE_WANDB_TAGS} sweep_id=${GRID_SWEEP_ID}"
 echo "[grid] sweep_axes=${SWEEP_AXES} res=${RES} tokens_per_run=${TOKENS_PER_RUN:-<grid>}"
+
+# Optional schedule override (disables cosine decay when FINAL_LR_FRAC=1.0).
+schedule_args=()
+if [[ -n "${FINAL_LR_FRAC}" ]]; then
+  schedule_args+=(--final_lr_frac "${FINAL_LR_FRAC}")
+fi
 
 # Auto-detect GPUs when GPUS isn't set (safe default for devpod 1×GPU workspaces).
 GPU_IDS=()
@@ -431,6 +459,7 @@ for gpu_idx in "${!GPU_IDS[@]}"; do
             --save_artifacts False \
             --deterministic True \
             --seed "${SEED}" \
+            "${schedule_args[@]}" \
             --max_seq_len "${MAX_SEQ_LEN}" \
             --wandb_tags "${FINETUNE_WANDB_TAGS}" \
             --trainable_param_groups "${TRAINABLE_PARAM_GROUPS}" \

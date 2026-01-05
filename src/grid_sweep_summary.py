@@ -147,11 +147,16 @@ def _build_grids(points: list[PointResult], resolution: int):
         loss_grid: Final loss values (NaN for non-trainable)
         convergence_grid: Binary trainability (1=trainable, 0=not trainable)
         stability_grid: Binary stability (1=stable/finite loss, 0=unstable/NaN)
+
+    Note: Missing grid points (no data) are filled with NaN and will appear as
+    white/transparent in the visualization. Use interpolation='nearest' in imshow
+    to avoid anti-aliasing artifacts at boundaries.
     """
-    fractal_grid = np.zeros((resolution, resolution))
+    # Initialize with NaN to distinguish missing data from actual 0 values
+    fractal_grid = np.full((resolution, resolution), np.nan)
     loss_grid = np.full((resolution, resolution), np.nan)
-    convergence_grid = np.zeros((resolution, resolution))
-    stability_grid = np.zeros((resolution, resolution))
+    convergence_grid = np.full((resolution, resolution), np.nan)
+    stability_grid = np.full((resolution, resolution), np.nan)
 
     converged_losses: list[float] = []
     for p in points:
@@ -181,6 +186,24 @@ def _build_grids(points: list[PointResult], resolution: int):
             fractal_grid[p.grid_i, p.grid_j] = -1.0
 
     return fractal_grid, loss_grid, convergence_grid, stability_grid
+
+
+def _fill_nan_nearest(grid: np.ndarray) -> np.ndarray:
+    """Fill NaN values using nearest-neighbor interpolation.
+
+    This is useful for partial sweeps where not all grid points have data.
+    Uses scipy.ndimage.distance_transform_edt to find nearest valid values.
+    """
+    if not np.any(np.isnan(grid)):
+        return grid
+    mask = np.isnan(grid)
+    if mask.all():
+        return grid  # All NaN, nothing to interpolate from
+    # Find indices of nearest non-NaN values
+    from scipy.ndimage import distance_transform_edt
+    _, indices = distance_transform_edt(mask, return_distances=True, return_indices=True)
+    filled = grid[tuple(indices)]
+    return filled
 
 
 def _compute_fractal(convergence_grid: np.ndarray):
@@ -287,7 +310,15 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
         )
 
     fractal_grid, loss_grid, convergence_grid, stability_grid = _build_grids(points, args.resolution)
-    fractal = _compute_fractal(convergence_grid)
+
+    # Fill gaps from partial sweeps using nearest-neighbor interpolation
+    # This makes visualizations smoother when not all grid points have data
+    fractal_grid_filled = _fill_nan_nearest(fractal_grid)
+    stability_grid_filled = _fill_nan_nearest(stability_grid)
+    convergence_grid_filled = _fill_nan_nearest(convergence_grid)
+    # loss_grid keeps NaN for non-trainable (intentional gaps)
+
+    fractal = _compute_fractal(convergence_grid_filled)
 
     if args.sweep_axes == "matrix_unembedding":
         xs = [p.unembedding_lr for p in points if p.unembedding_lr is not None]
@@ -314,13 +345,14 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
 
     # Panel 1: Trainability Boundary (with loss-intensity coloring)
     im1 = axes[0].imshow(
-        fractal_grid,
+        fractal_grid_filled,
         origin="lower",
         aspect="auto",
         cmap=_fractal_cmap(),
         vmin=-1.0,
         vmax=1.0,
         extent=extent,
+        interpolation="nearest",
     )
     axes[0].set_xlabel(x_label)
     axes[0].set_ylabel(y_label)
@@ -329,13 +361,14 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
 
     # Panel 2: Stability Boundary (the TRUE fractal boundary from the papers)
     im2 = axes[1].imshow(
-        stability_grid,
+        stability_grid_filled,
         origin="lower",
         aspect="auto",
         cmap="RdYlGn",  # Red=Unstable, Yellow=boundary, Green=Stable
         vmin=0,
         vmax=1,
         extent=extent,
+        interpolation="nearest",
     )
     axes[1].set_xlabel(x_label)
     axes[1].set_ylabel(y_label)
@@ -346,11 +379,12 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
 
     # Panel 3: Final Loss (trainable runs only)
     im3 = axes[2].imshow(
-        loss_grid,
+        loss_grid,  # Keep NaN for non-trainable (intentional gaps)
         origin="lower",
         aspect="auto",
         cmap="viridis_r",
         extent=extent,
+        interpolation="nearest",
     )
     axes[2].set_xlabel(x_label)
     axes[2].set_ylabel(y_label)
@@ -359,13 +393,14 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
 
     # Panel 4: Binary Trainability
     im4 = axes[3].imshow(
-        convergence_grid,
+        convergence_grid_filled,
         origin="lower",
         aspect="auto",
         cmap="RdBu",
         vmin=0,
         vmax=1,
         extent=extent,
+        interpolation="nearest",
     )
     axes[3].set_xlabel(x_label)
     axes[3].set_ylabel(y_label)
