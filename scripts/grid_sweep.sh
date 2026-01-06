@@ -186,6 +186,8 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
       set -euo pipefail
       cd ${pod_workdir}
       if [[ -f .env ]]; then source .env; fi
+      # Fix git dubious ownership error (devpod runs as root but workspace owned by host user)
+      git config --global --add safe.directory ${pod_workdir} 2>/dev/null || true
       if [[ ${AUTO_PULL} -eq 1 ]]; then
         git pull --ff-only
       fi
