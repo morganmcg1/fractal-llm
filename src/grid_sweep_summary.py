@@ -34,6 +34,8 @@ from matplotlib.colors import LinearSegmentedColormap
 from rich.console import Console
 from rich.panel import Panel
 from scipy import ndimage
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 console = Console()
 
@@ -246,6 +248,122 @@ def _safe_extent(vmin: float, vmax: float) -> tuple[float, float]:
     return math.log10(vmin), math.log10(vmax)
 
 
+def _create_plotly_heatmaps(
+    fractal_grid: np.ndarray,
+    stability_grid: np.ndarray,
+    loss_grid: np.ndarray,
+    convergence_grid: np.ndarray,
+    extent: list[float],
+    x_label: str,
+    y_label: str,
+) -> go.Figure:
+    """Create interactive 4-panel Plotly heatmaps for W&B logging."""
+    fig = make_subplots(
+        rows=1,
+        cols=4,
+        subplot_titles=[
+            "Trainability Boundary<br>(Blue=Trainable, Red=Not Trainable)",
+            "Stability Boundary<br>(Green=Stable, Red=Unstable)",
+            "Final Loss (trainable only)",
+            "Binary Trainability",
+        ],
+        horizontal_spacing=0.08,
+    )
+
+    # Common axis settings - map grid indices to log-space values
+    res = fractal_grid.shape[0]
+    x_vals = np.linspace(extent[0], extent[1], res)
+    y_vals = np.linspace(extent[2], extent[3], res)
+
+    # Panel 1: Trainability Boundary (Blue-White-Red colorscale)
+    fig.add_trace(
+        go.Heatmap(
+            z=fractal_grid,
+            x=x_vals,
+            y=y_vals,
+            colorscale=[[0, "rgb(180,0,0)"], [0.5, "white"], [1, "rgb(0,100,200)"]],
+            zmin=-1,
+            zmax=1,
+            colorbar=dict(title="Trainability", x=0.2, len=0.8),
+            hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}<br>Value: %{{z:.3f}}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+
+    # Panel 2: Stability Boundary (Red-Yellow-Green colorscale)
+    fig.add_trace(
+        go.Heatmap(
+            z=stability_grid,
+            x=x_vals,
+            y=y_vals,
+            colorscale=[[0, "rgb(215,39,40)"], [0.5, "rgb(255,255,0)"], [1, "rgb(44,160,44)"]],
+            zmin=0,
+            zmax=1,
+            colorbar=dict(
+                title="Stability",
+                x=0.45,
+                len=0.8,
+                tickvals=[0, 1],
+                ticktext=["Unstable", "Stable"],
+            ),
+            hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}<br>Stable: %{{z:.0f}}<extra></extra>",
+        ),
+        row=1,
+        col=2,
+    )
+
+    # Panel 3: Final Loss (viridis reversed)
+    fig.add_trace(
+        go.Heatmap(
+            z=loss_grid,
+            x=x_vals,
+            y=y_vals,
+            colorscale="Viridis_r",
+            colorbar=dict(title="Loss", x=0.7, len=0.8),
+            hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}<br>Loss: %{{z:.3f}}<extra></extra>",
+        ),
+        row=1,
+        col=3,
+    )
+
+    # Panel 4: Binary Trainability (Red-Blue)
+    fig.add_trace(
+        go.Heatmap(
+            z=convergence_grid,
+            x=x_vals,
+            y=y_vals,
+            colorscale=[[0, "rgb(215,39,40)"], [1, "rgb(33,102,172)"]],
+            zmin=0,
+            zmax=1,
+            colorbar=dict(
+                title="Trainable",
+                x=0.95,
+                len=0.8,
+                tickvals=[0, 1],
+                ticktext=["Not Trainable", "Trainable"],
+            ),
+            hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}<br>Trainable: %{{z:.0f}}<extra></extra>",
+        ),
+        row=1,
+        col=4,
+    )
+
+    # Update layout
+    fig.update_layout(
+        title_text="Fractal Grid Sweep Analysis (Interactive)",
+        height=500,
+        width=1800,
+    )
+
+    # Update all x and y axes labels
+    for i in range(1, 5):
+        fig.update_xaxes(title_text=x_label, row=1, col=i)
+        fig.update_yaxes(title_text=y_label, row=1, col=i)
+
+    return fig
+
+
 def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
     log_dir = args.log_dir.expanduser().resolve()
     if not log_dir.exists():
@@ -416,6 +534,17 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
     fig.savefig(img_path, dpi=150, facecolor="white")
     plt.close(fig)
 
+    # Create interactive Plotly heatmaps for W&B
+    plotly_fig = _create_plotly_heatmaps(
+        fractal_grid=fractal_grid_filled,
+        stability_grid=stability_grid_filled,
+        loss_grid=loss_grid,
+        convergence_grid=convergence_grid_filled,
+        extent=extent,
+        x_label=x_label,
+        y_label=y_label,
+    )
+
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -465,6 +594,7 @@ def summarize_and_log(args: Args) -> tuple[Path, Path, str]:
     summary_run.log(
         {
             "fractal/image": wandb.Image(str(img_path), caption=caption),
+            "fractal/interactive": plotly_fig,  # Interactive Plotly version
             "fractal/dimension": fractal["fractal_dimension"],
             "fractal/boundary_pixels": fractal["boundary_pixels"],
             "fractal/converged_ratio": fractal["converged_ratio"],
