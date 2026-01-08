@@ -1,4 +1,4 @@
-# Fractal-LLM Research Results
+# Fractal-LLM Research Results (LLM slop review)
 
 Investigation of fractal trainability boundaries in LLM fine-tuning, inspired by [Sohl-Dickstein et al. (2024)](https://arxiv.org/abs/2402.06184).
 
@@ -11,7 +11,7 @@ Investigation of fractal trainability boundaries in LLM fine-tuning, inspired by
 | **Grid Resolution** | 64×64 (4,096 configurations) |
 | **Axes Swept** | Matrix LR × Unembedding LR |
 | **Tokens/Run** | 250,000 |
-| **Optimizer** | AdamW |
+| **Optimizer** | AdamW, Muon |
 | **Trainable Params** | matrix + unembedding layers only |
 
 ---
@@ -97,6 +97,38 @@ Our observed **D ≈ 1.20** aligns closely with Sohl-Dickstein's ReLU full-batch
 ### Fractality Confirmed
 
 Despite the lower dimension, we observe **clear fractal structure** at 64×64 resolution. The boundary between trainable (blue) and non-trainable (red) regions shows characteristic jagged, self-similar patterns—consistent with the original work's finding that "fractal boundaries persist across more than ten decades of scale."
+
+---
+
+## Zoom Targets from the 64×64 Grid
+
+Based on the converged mask from the 64×64 sweep, we selected three 16×16 sub-boxes with high boundary density to zoom into at higher resolution.
+
+| Box | Grid Indices (i, j) | Matrix LR Range | Unembedding LR Range | Notes |
+|-----|---------------------|-----------------|----------------------|-------|
+| High matrix / low unembedding | i=48–63, j=0–15 | 1.49e-2 → 3.00e-1 | 1.00e-6 → 1.55e-5 | High‑LR edge, low unembedding |
+| High matrix / high unembedding | i=48–63, j=48–63 | 1.49e-2 → 3.00e-1 | 6.45e-3 → 1.00e-1 | Upper‑right instability corner |
+| Low matrix / mid‑high unembedding | i=5–20, j=38–53 | 2.72e-6 → 5.48e-5 | 1.04e-3 → 1.61e-2 | Highest boundary density |
+
+![64×64 converged grid with zoom boxes](results/figures/64x64_converged_zoom_boxes.png)
+
+---
+
+## Pending Experiments
+
+### Box 1 Zoom Sweep (High matrix / low unembedding)
+
+| Setting | Value |
+|---------|-------|
+| **Status** | Running (pending summary) |
+| **Run Prefix / Sweep ID** | `64x64_box_1_zoom_20260108_211804` |
+| **Axes Swept** | Matrix LR × Unembedding LR |
+| **Resolution** | 64×64 |
+| **Tokens/Run** | 250,000 |
+| **Matrix LR Range** | 1.49e-2 → 3.00e-1 |
+| **Unembedding LR Range** | 1.00e-6 → 1.55e-5 |
+| **Devpods** | fractal-llm-1, fractal-llm-2, fractal-llm-3 |
+| **Trainable Params** | matrix + unembedding |
 
 ---
 
