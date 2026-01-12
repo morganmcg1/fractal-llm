@@ -132,6 +132,26 @@ Based on the converged mask from the 64×64 sweep, we selected three 16×16 sub-
 
 ---
 
+### Box 1-2 Zoom Sweep (Sub-box within High matrix / low unembedding)
+
+Targeted sub-box to zoom further into the Box 1 boundary region.
+
+| Setting | Value |
+|---------|-------|
+| **Status** | Planned |
+| **Run Prefix / Sweep ID** | `64x64_box_1-2` |
+| **Axes Swept** | Matrix LR × Unembedding LR |
+| **Resolution** | 64×64 |
+| **Matrix LR Range (log10)** | -0.7 → -0.6 |
+| **Matrix LR Range (linear)** | 1.995e-1 → 2.512e-1 |
+| **Unembedding LR Range (log10)** | -5.6 → -5.4 |
+| **Unembedding LR Range (linear)** | 2.512e-6 → 3.981e-6 |
+| **Trainable Params** | matrix + unembedding |
+
+![Box 1 zoom with next sub-box](results/figures/64x64_box_1_zoom_next_box.png)
+
+---
+
 ## References
 
 - **Paper:** Sohl-Dickstein, J. (2024). *The boundary of neural network trainability is fractal.* [arXiv:2402.06184](https://arxiv.org/abs/2402.06184)

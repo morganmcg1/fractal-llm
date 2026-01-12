@@ -210,6 +210,10 @@ __marimo__/
 
 # Project-specific
 results/
+!results/
+results/*
+!results/figures/
+!results/figures/*.png
 data/
 *.pkl
 *.pt

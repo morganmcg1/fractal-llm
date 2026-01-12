@@ -58,6 +58,7 @@ DEVPOD_WORKDIR=${DEVPOD_WORKDIR:-}  # if unset in orchestrator mode, defaults pe
 DEVPOD_TMUX_SESSION=${DEVPOD_TMUX_SESSION:-grid_${RUN_PREFIX}}
 AUTO_PULL=${AUTO_PULL:-1}           # if 1, run git pull --ff-only on each devpod before starting
 AUTO_RESET=${AUTO_RESET:-1}         # if 1, run git reset --hard HEAD after pulling (restores missing tracked files)
+AUTO_CLEAN=${AUTO_CLEAN:-0}         # if 1, run git clean -fd to remove untracked files before pulling
 AUTO_UV_SYNC=${AUTO_UV_SYNC:-1}     # if 1, run uv sync --frozen on each devpod before starting
 WAIT_FOR_COMPLETION=${WAIT_FOR_COMPLETION-}  # if 1, orchestrator waits for tmux workers to finish
 POLL_INTERVAL_S=${POLL_INTERVAL_S:-30}
@@ -193,6 +194,9 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
       fi
       if [[ ${AUTO_RESET} -eq 1 ]]; then
         git reset --hard HEAD || echo \"[grid] WARNING: git reset failed on ${pod}\"
+        if [[ ${AUTO_CLEAN} -eq 1 ]]; then
+          git clean -fd || echo \"[grid] WARNING: git clean failed on ${pod}\"
+        fi
       fi
       if [[ ${AUTO_UV_SYNC} -eq 1 ]]; then
         if ! uv sync --frozen; then
@@ -218,8 +222,19 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
     fi
   done
   if [[ "${launch_rc}" -ne 0 ]]; then
-    echo "[grid] ERROR: one or more devpods failed to launch" >&2
-    exit 3
+    echo "[grid] WARNING: one or more devpods reported errors during launch; verifying tmux sessions..."
+    missing=0
+    for pod in "${DEVPODS[@]}"; do
+      if ! devpod --silent ssh "${pod}" --command "bash -lc 'tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null'"; then
+        echo "[grid] ERROR: tmux session missing on ${pod}: ${DEVPOD_TMUX_SESSION}" >&2
+        missing=1
+      fi
+    done
+    if [[ "${missing}" -ne 0 ]]; then
+      echo "[grid] ERROR: one or more devpods failed to launch" >&2
+      exit 3
+    fi
+    echo "[grid] WARNING: devpod reported errors but tmux sessions exist; continuing"
   fi
 
   echo "[grid] all devpods launched"
