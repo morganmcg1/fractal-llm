@@ -142,10 +142,11 @@ Targeted sub-box to zoom further into the Box 1 boundary region.
 | **Run Prefix / Sweep ID** | `64x64_box_1-2` |
 | **Axes Swept** | Matrix LR × Unembedding LR |
 | **Resolution** | 64×64 |
-| **Matrix LR Range (log10)** | -0.7 → -0.6 |
-| **Matrix LR Range (linear)** | 1.995e-1 → 2.512e-1 |
-| **Unembedding LR Range (log10)** | -5.6 → -5.4 |
-| **Unembedding LR Range (linear)** | 2.512e-6 → 3.981e-6 |
+| **Matrix LR Range (log10)** | -0.6793 → -0.5793 |
+| **Matrix LR Range (linear)** | 2.093e-1 → 2.634e-1 |
+| **Unembedding LR Range (log10)** | -5.55 → -5.45 |
+| **Unembedding LR Range (linear)** | 2.818e-6 → 3.548e-6 |
+| **Notes** | Square in log10; shifted up by +1 grid pixel in matrix LR |
 | **Trainable Params** | matrix + unembedding |
 
 ![Box 1 zoom with next sub-box](results/figures/64x64_box_1_zoom_next_box.png)
