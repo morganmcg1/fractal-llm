@@ -138,8 +138,8 @@ Targeted sub-box to zoom further into the Box 1 boundary region.
 
 | Setting | Value |
 |---------|-------|
-| **Status** | Planned |
-| **Run Prefix / Sweep ID** | `64x64_box_1-2` |
+| **Status** | Complete (summary logged) |
+| **Run Prefix / Sweep ID** | `64x64_box_1-2_20260112_160405` |
 | **Axes Swept** | Matrix LR × Unembedding LR |
 | **Resolution** | 64×64 |
 | **Matrix LR Range (log10)** | -0.6793 → -0.5793 |
@@ -150,6 +150,11 @@ Targeted sub-box to zoom further into the Box 1 boundary region.
 | **Trainable Params** | matrix + unembedding |
 
 ![Box 1 zoom with next sub-box](results/figures/64x64_box_1_zoom_next_box.png)
+
+![Box 1-2 trainability boundary](results/figures/trainability_boundary_box1-2.png)
+
+![Box 1 → Box 1-2 zoom animation](results/figures/zoom_animation_box_1-2/trainability_zoom_box1_box1-2.gif)
+(MP4: results/figures/zoom_animation_box_1-2/trainability_zoom_box1_box1-2.mp4)
 
 ---
 
@@ -169,3 +174,4 @@ Targeted sub-box to zoom further into the Box 1 boundary region.
 | With Annealing Grid | `3acujwrk` | [View](https://wandb.ai/morgy/fractal-llm/runs/3acujwrk) |
 | No Annealing Grid | `fm4jhhbs` | [View](https://wandb.ai/morgy/fractal-llm/runs/fm4jhhbs) |
 | Comparison Analysis | `dbpdfjdf` | [View](https://wandb.ai/morgy/fractal-llm/runs/dbpdfjdf) |
+| Box 1-2 Zoom Summary | `wsobl4fq` | Complete (trainability boundary image logged) |

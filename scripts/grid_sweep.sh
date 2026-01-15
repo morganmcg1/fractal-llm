@@ -56,6 +56,9 @@ NUM_PODS=${NUM_PODS:-1}             # number of pods participating in the sweep
 DEVPOD_NAME=${DEVPOD_NAME:-}        # optional label for logs/tags
 DEVPOD_WORKDIR=${DEVPOD_WORKDIR:-}  # if unset in orchestrator mode, defaults per pod to /workspaces/<devpod-name>
 DEVPOD_TMUX_SESSION=${DEVPOD_TMUX_SESSION:-grid_${RUN_PREFIX}}
+DEVPODS_PARALLEL=${DEVPODS_PARALLEL:-1}  # if 0, launch devpods sequentially to avoid flaky parallel ssh
+DEVPOD_VERIFY_RETRIES=${DEVPOD_VERIFY_RETRIES:-3}
+DEVPOD_VERIFY_BACKOFF_S=${DEVPOD_VERIFY_BACKOFF_S:-5}
 AUTO_PULL=${AUTO_PULL:-1}           # if 1, run git pull --ff-only on each devpod before starting
 AUTO_RESET=${AUTO_RESET:-1}         # if 1, run git reset --hard HEAD after pulling (restores missing tracked files)
 AUTO_CLEAN=${AUTO_CLEAN:-0}         # if 1, run git clean -fd to remove untracked files before pulling
@@ -74,6 +77,26 @@ _assign() {
   else
     echo "${key}=$(_quote "${val}")"
   fi
+}
+
+_check_tmux_session() {
+  local pod=$1
+  local session=$2
+  local attempt=0
+  local status=""
+  while true; do
+    attempt=$((attempt + 1))
+    status=$(devpod --silent ssh "${pod}" \
+      --command "bash -lc 'if tmux has-session -t ${session} 2>/dev/null; then echo RUNNING; else echo MISSING; fi'" \
+      || true)
+    if [[ "${status}" == *RUNNING* ]]; then
+      return 0
+    fi
+    if [[ "${attempt}" -ge "${DEVPOD_VERIFY_RETRIES}" ]]; then
+      return 1
+    fi
+    sleep $((DEVPOD_VERIFY_BACKOFF_S * attempt))
+  done
 }
 
 if [[ "${SWEEP_AXES}" == "matrix_unembedding" ]] && [[ -z "${TOKENS_PER_RUN}" ]]; then
@@ -135,6 +158,7 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
 
   # Launch a worker tmux session on each devpod.
   pids=()
+  launch_rc=0
   for pod_idx in "${!DEVPODS[@]}"; do
     pod="${DEVPODS[$pod_idx]}"
     echo "[grid] launching worker ${pod_idx}/${NUM_PODS} on devpod=${pod}"
@@ -183,7 +207,8 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
     [[ -n "${DATASET_REVISION}" ]] && env_assign+=("$(_assign DATASET_REVISION "${DATASET_REVISION}")")
     tmux_cmd="${env_assign[*]} ./scripts/grid_sweep.sh"
 
-    devpod --silent ssh "${pod}" --command "bash -lc '
+    if [[ "${DEVPODS_PARALLEL}" == "1" ]]; then
+      devpod --silent ssh "${pod}" --command "bash -lc '
       set -euo pipefail
       cd ${pod_workdir}
       if [[ -f .env ]]; then source .env; fi
@@ -212,28 +237,63 @@ if [[ -n "${DEVPODS_STR}" ]] && [[ "${GRID_SWEEP_ROLE}" != "worker" ]]; then
       tmux new-session -d -s ${DEVPOD_TMUX_SESSION} -c ${pod_workdir} \"${tmux_cmd}\"
       echo \"[grid] started ${pod}: tmux attach -t ${DEVPOD_TMUX_SESSION}\"
     '" &
-    pids+=($!)
+      pids+=($!)
+    else
+      if ! devpod --silent ssh "${pod}" --command "bash -lc '
+        set -euo pipefail
+        cd ${pod_workdir}
+        if [[ -f .env ]]; then source .env; fi
+        # Fix git dubious ownership error (devpod runs as root but workspace owned by host user)
+        git config --global --add safe.directory ${pod_workdir} 2>/dev/null || true
+        if [[ ${AUTO_PULL} -eq 1 ]]; then
+          git pull --ff-only
+        fi
+        if [[ ${AUTO_RESET} -eq 1 ]]; then
+          git reset --hard HEAD || echo \"[grid] WARNING: git reset failed on ${pod}\"
+          if [[ ${AUTO_CLEAN} -eq 1 ]]; then
+            git clean -fd || echo \"[grid] WARNING: git clean failed on ${pod}\"
+          fi
+        fi
+        if [[ ${AUTO_UV_SYNC} -eq 1 ]]; then
+          if ! uv sync --frozen; then
+            echo \"[grid] WARNING: uv sync --frozen failed on ${pod}; removing .venv and retrying\"
+            rm -rf .venv || true
+            uv sync --frozen
+          fi
+        fi
+        if tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null; then
+          echo \"[grid] ERROR: tmux session already exists on ${pod}: ${DEVPOD_TMUX_SESSION}\" >&2
+          exit 3
+        fi
+        tmux new-session -d -s ${DEVPOD_TMUX_SESSION} -c ${pod_workdir} \"${tmux_cmd}\"
+        echo \"[grid] started ${pod}: tmux attach -t ${DEVPOD_TMUX_SESSION}\"
+      '"; then
+        launch_rc=1
+      fi
+    fi
   done
 
-  launch_rc=0
-  for pid in "${pids[@]}"; do
-    if ! wait "${pid}"; then
-      launch_rc=1
-    fi
-  done
-  if [[ "${launch_rc}" -ne 0 ]]; then
-    echo "[grid] WARNING: one or more devpods reported errors during launch; verifying tmux sessions..."
-    missing=0
-    for pod in "${DEVPODS[@]}"; do
-      if ! devpod --silent ssh "${pod}" --command "bash -lc 'tmux has-session -t ${DEVPOD_TMUX_SESSION} 2>/dev/null'"; then
-        echo "[grid] ERROR: tmux session missing on ${pod}: ${DEVPOD_TMUX_SESSION}" >&2
-        missing=1
+  if [[ "${DEVPODS_PARALLEL}" == "1" ]]; then
+    for pid in "${pids[@]}"; do
+      if ! wait "${pid}"; then
+        launch_rc=1
       fi
     done
-    if [[ "${missing}" -ne 0 ]]; then
-      echo "[grid] ERROR: one or more devpods failed to launch" >&2
-      exit 3
+  fi
+
+  echo "[grid] verifying tmux sessions (retries=${DEVPOD_VERIFY_RETRIES})"
+  missing=0
+  for pod in "${DEVPODS[@]}"; do
+    if ! _check_tmux_session "${pod}" "${DEVPOD_TMUX_SESSION}"; then
+      echo "[grid] ERROR: tmux session missing on ${pod}: ${DEVPOD_TMUX_SESSION}" >&2
+      missing=1
     fi
+  done
+  if [[ "${missing}" -ne 0 ]]; then
+    echo "[grid] ERROR: one or more devpods failed to launch" >&2
+    exit 3
+  fi
+  if [[ "${launch_rc}" -ne 0 ]]; then
     echo "[grid] WARNING: devpod reported errors but tmux sessions exist; continuing"
   fi
 

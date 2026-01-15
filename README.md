@@ -2,6 +2,12 @@
 
 Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 and DocVQA on Modal H100s. We vendor nanochat under `third_party/nanochat` (commit `8f979a8bdab491c4c152ce5c87f90c2ec31d0845`, documented in `third_party/nanochat/COMMIT_INFO.txt`) so training uses our patched copy.
 
+## Zoom Animation (Trainability Boundary)
+
+<video src="results/figures/zoom_animation_box_1-2/trainability_zoom_box1_box1-2.mp4" controls loop muted playsinline></video>
+
+Fallback GIF: `results/figures/zoom_animation_box_1-2/trainability_zoom_box1_box1-2.gif`
+
 ## Quickstart
 
 1) **Test a single run**
@@ -22,6 +28,17 @@ Fractal analysis of LLM fine-tuning trainability boundaries using nanochat-d20 a
      `torchrun --standalone --nproc_per_node=8 -m src.finetune --grid=True --run=fractal-grid --resolution=16 --lr_min=1e-5 --lr_max=1e-3 --tokens_min=5e3 --tokens_max=5e5`
    - Use a specific W&B artifact as the model source:  
      `torchrun --standalone --nproc_per_node=1 -m src.finetune --model_id="wandb:morgy/fractal-llm/nanochat-fin-rl-artifact:v7" --run=smoke --learning_rate=3e-4 --num_tokens=20000 --log_every=1 --eval_every=0`
+
+6) **Make a zoom animation (parent → box1 → box1‑2)**
+   ```bash
+   uv run python -m src.make_zoom_animation \
+     --parent_run 3acujwrk \
+     --box1_run e3dnirmf \
+     --box1_2_run wsobl4fq
+   ```
+   Outputs:
+   - `results/figures/zoom_animation_box_1-2/trainability_zoom_box1_box1-2.gif`
+   - `results/figures/zoom_animation_box_1-2/trainability_zoom_box1_box1-2.mp4`
 
 ## Chat UI (Web)
 
