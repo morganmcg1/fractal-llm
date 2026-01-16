@@ -201,6 +201,17 @@ Remote development on CoreWeave's Kubernetes cluster with H200 GPUs. Workspace d
 # Start 8×H200 dev environment (opens VSCode)
 corepod .
 
+# Manual provider setup (if corepod alias missing)
+devpod provider add kubernetes --name kubernetes-crwv \
+  -o KUBERNETES_CONTEXT=cks-wb3 \
+  -o RESOURCES="limits.nvidia.com/gpu=8" \
+  -o LABELS="devpod.sh/user=$(whoami)" \
+  -o INACTIVITY_TIMEOUT=1d
+
+# Launch a workspace with the GPU image
+devpod up --devcontainer-image us-docker.pkg.dev/colab-images/public/runtime \
+  --provider kubernetes-crwv .
+
 # SSH into workspace
 ssh fractal-llm.devpod
 
